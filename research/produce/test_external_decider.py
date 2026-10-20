@@ -17,6 +17,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent")]
+import custom.action.produce as produce_actions
 from produce.decider import ExternalDecider, run_interactive
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -106,6 +107,64 @@ class InteractiveLoopTest(unittest.TestCase):
         result, controller, decider = self.run_loop([{"id": "done"}], stopping=True)
         self.assertFalse(result)
         self.assertEqual(decider.requests, [])
+
+
+def reward_frame(brightness, offers=3):
+    """合成奖励画面：详情面板亮度与可定位的候选数（候选定位由测试替换）。"""
+    image = np.full((1280, 720, 3), brightness, dtype=np.uint8)
+    image[0, 0, 0] = offers
+    return image
+
+
+class SequenceController(FakeController):
+    """按顺序返回截图，最后一张重复使用。"""
+
+    def __init__(self, frames):
+        super().__init__()
+        self.frames = list(frames)
+
+    def post_screencap(self):
+        frame = self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
+        return SimpleNamespace(wait=lambda: SimpleNamespace(get=lambda: frame))
+
+
+class RewardScreenTest(unittest.TestCase):
+    """领取后的淡出画面仍能定位到候选框：等待面板正常显示，画面离开后不再点击或询问。"""
+
+    def setUp(self):
+        layout = lambda image: {"candidates": [{"candidate_id": f"reward_{i + 1}", "box": [100 + 160 * i, 820, 130, 130]} for i in range(image[0, 0, 0])]}
+        for name, value in (("reward_layout", layout), ("ExternalDecider", SimpleNamespace(load=lambda: self.decider))):
+            original = getattr(produce_actions, name)
+            setattr(produce_actions, name, value)
+            self.addCleanup(setattr, produce_actions, name, original)
+        self.decider = ScriptedDecider([{"id": "reward_2"}])
+        self.action = produce_actions.ProduceChooseRewardExternal()
+        self.action.SETTLE_TIMEOUT, self.action.PREVIEW_DELAY = 0.5, 0
+
+    def context(self, frames):
+        controller = SequenceController(frames)
+        return SimpleNamespace(tasker=SimpleNamespace(controller=controller, stopping=False)), controller
+
+    def test_fading_screen_that_leaves_is_not_tapped(self):
+        context, controller = self.context([reward_frame(190), reward_frame(120, offers=0)])
+        self.assertTrue(self.action.run(context, None))
+        self.assertEqual((controller.clicks, self.decider.requests), ([], []))
+
+    def test_waits_for_next_reward_to_appear(self):
+        context, controller = self.context([reward_frame(190), reward_frame(255)])
+        image, offers = self.action._settled_offers(context)
+        self.assertEqual(len(offers), 3)
+        self.assertEqual(int(image[600, 300, 0]), 255)
+
+    def test_dim_panel_past_timeout_hands_back_to_old_choice(self):
+        context, controller = self.context([reward_frame(190)])
+        self.assertIsNone(self.action._settled_offers(context)[1])
+
+    def test_screen_leaving_during_preview_stops_tapping(self):
+        context, controller = self.context([reward_frame(255), reward_frame(255), reward_frame(120, offers=0)])
+        self.assertTrue(self.action.run(context, None))
+        self.assertEqual(len(controller.clicks), 2)
+        self.assertEqual(self.decider.requests, [])
 
 
 class MailboxTest(unittest.TestCase):

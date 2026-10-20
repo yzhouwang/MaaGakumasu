@@ -2,6 +2,7 @@
 
 import time
 
+import numpy as np
 from utils import logger
 from produce.battle import ProduceCardsAuto
 from produce.events import ProduceChooseEventAuto, ProduceChooseEventBase, ProduceChooseNIAEventAuto
@@ -220,13 +221,21 @@ class ProduceChooseRewardExternal(CustomAction):
     """
 
     PREVIEW_DELAY = 0.8
+    SETTLE_TIMEOUT = 3.0
+    # 奖励详情面板（白底）区域；领取后的淡出画面与离开后的画面在此明显变暗
+    PANEL_ROI = (80, 490, 560, 280)
 
     def run(self, context, argv):
         decider = ExternalDecider.load()
-        image = context.tasker.controller.post_screencap().wait().get()
-        offers = reward_layout(image)["candidates"]
-        if not decider or len(offers) < 2:
+        if not decider:
             return self.fallback(context)
+        image, offers = self._settled_offers(context)
+        if offers is None:
+            return self.fallback(context)
+        if len(offers) < 2:
+            # 领取后的淡出画面仍能定位到候选框，画面离开后不再点击，交回主循环重新识别
+            logger.info("奖励画面已离开，不再选择")
+            return True
         previews = {}
         for index, offer in enumerate(offers):
             x, y, w, h = offer["box"]
@@ -235,6 +244,9 @@ class ProduceChooseRewardExternal(CustomAction):
             previews[f"offer{index + 1}"] = context.tasker.controller.post_screencap().wait().get().copy()
             if context.tasker.stopping:
                 return False
+            if not self._panel_bright(previews[f"offer{index + 1}"]):
+                logger.warning("奖励画面在预览时离开，不再点击")
+                return True
         candidates = [
             {"id": offer["candidate_id"], "label": f"第 {index + 1} 个奖励（详情见 offer{index + 1} 截图）", "box": offer["box"]}
             for index, offer in enumerate(offers)
@@ -271,6 +283,30 @@ class ProduceChooseRewardExternal(CustomAction):
         time.sleep(self.PREVIEW_DELAY)
         context.run_task("ProduceChooseConfirm")
         return True
+
+    @classmethod
+    def _panel_bright(cls, image) -> bool:
+        x, y, w, h = cls.PANEL_ROI
+        return float(np.median(image[y:y + h, x:x + w])) >= 250
+
+    def _settled_offers(self, context):
+        """
+        等待奖励画面完全显示后定位候选。
+
+        Returns:
+            tuple: (截图, 候选)。候选为空表示画面已离开；为 None 表示超时后面板仍未正常显示，交给原有选择。
+        """
+        deadline = time.time() + self.SETTLE_TIMEOUT
+        while True:
+            image = context.tasker.controller.post_screencap().wait().get()
+            offers = reward_layout(image)["candidates"]
+            if len(offers) < 2 or context.tasker.stopping:
+                return image, []
+            if self._panel_bright(image):
+                return image, offers
+            if time.time() >= deadline:
+                return image, None
+            time.sleep(0.3)
 
     @staticmethod
     def _drinks_full(context, image):
