@@ -868,6 +868,7 @@
             "[JumpBack]ProduceChooseEventFlag",
             "[JumpBack]ProduceCardsFlag",
             "[JumpBack]ProduceChooseGetFlag",
+            "[JumpBack]ProduceChooseRewardExternal",
             "[JumpBack]ProduceChooseStrengthenFlag",
             "[JumpBack]ProduceChooseDeleteFlag",
             "[JumpBack]ProduceShoppingFlag",

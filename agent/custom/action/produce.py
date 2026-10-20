@@ -229,6 +229,10 @@ class ProduceChooseRewardExternal(CustomAction):
         skip = context.run_recognition("ProduceChooseSkip", image)
         if skip and skip.hit:
             candidates.append({"id": "skip", "label": "不领取", "box": [int(v) for v in skip.best_result.box]})
+            if self._drinks_full(context, previews[f"offer{len(offers)}"]):
+                # 饮料已达持有上限时「受け取る」不可用，只能选择「受け取らない」，无需询问决策者
+                logger.info("P 饮料已达持有上限，只能不领取")
+                return self._take(context, candidates[-1])
         recommended = context.run_recognition("ProduceChooseRecommend", image)
         fallback = "skip" if skip and skip.hit else candidates[0]["id"]
         if not (skip and skip.hit) and recommended and recommended.hit:
@@ -243,11 +247,26 @@ class ProduceChooseRewardExternal(CustomAction):
             return False
         if not chosen:
             return self.fallback(context)
+        if chosen["id"] != "skip" and skip and skip.hit and self._drinks_full(context, previews[f"offer{len(offers)}"]):
+            logger.info("P 饮料已达持有上限，改为不领取")
+            chosen = candidates[-1]
+        return self._take(context, chosen)
+
+    def _take(self, context, chosen):
         x, y, w, h = chosen["box"]
         context.tasker.controller.post_click(x + w // 2, y + h // 2).wait()
         time.sleep(self.PREVIEW_DELAY)
         context.run_task("ProduceChooseConfirm")
         return True
+
+    @staticmethod
+    def _drinks_full(context, image):
+        """「受け取る」按钮上出现「所持上限」时，说明 P 饮料已满。"""
+        detail = context.run_recognition(
+            "ProduceRewardDrinkFull", image,
+            pipeline_override={"ProduceRewardDrinkFull": {"recognition": "OCR", "roi": [200, 1095, 320, 60], "expected": "所持上限"}},
+        )
+        return bool(detail and detail.hit)
 
     @staticmethod
     def fallback(context):
