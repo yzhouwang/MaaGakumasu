@@ -55,6 +55,13 @@ jobs:
         run: |
           python ./tools/ci/check_resource.py --interface ./assets/interface.json
 
+      # 培育决策特征测试（需要 maafw）；行为有意变更时同步修改断言
+      - name: Produce Characterization Tests
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python ./research/produce/test_produce_decisions.py
+
   interface:
     runs-on: ubuntu-24.04
     env:

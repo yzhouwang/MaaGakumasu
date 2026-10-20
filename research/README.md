@@ -25,11 +25,12 @@ python research/produce/replay_reward_effects.py <单个采集目录> --database
 python research/produce/build_buff_templates.py --capture-root <采集目录> --preview debug/research/produce/buff_preview.png
 python research/produce/analyze_choices.py <已验收报告根目录> --output debug/research/produce/baseline
 python research/produce/test_reporting.py
+python research/produce/test_produce_decisions.py
 ```
 
 `capture_battle.py` 是显式启动的只读 ADB 旁路采样入口，参数见 `--help`；不会因生成报告或运行测试而启动。它使用可选开发依赖 OpenCV，模板取样使用 Pillow，均不增加客户端运行依赖。详细操作见 [出牌数据采集](../docs/zh_cn/出牌数据采集.md)。
 
-回归测试使用合成事件和文件，不连接设备，临时素材写入 `debug/research/produce/tests/`，校验路径后由测试清理。已有轮次及历史派生结果保持原位。迁移前 `tools/` 中的六个实验入口已移到本目录，统一使用新路径，不保留转发文件。
+回归测试使用合成事件和文件，不连接设备，临时素材写入 `debug/research/produce/tests/`，校验路径后由测试清理。`test_produce_decisions.py` 是客户端培育决策（出牌、事件优先级、偶像卡识别、试镜门槛）的特征测试，固定当前行为而不评价优劣，需要安装 maafw，CI 在资源检查任务中运行。已有轮次及历史派生结果保持原位。迁移前 `tools/` 中的六个实验入口已移到本目录，统一使用新路径，不保留转发文件。
 
 `analyze_choices.py` 读取已经验收的 `*/report.json`，输出 `baseline.json` / `baseline.md`。仅纳入正常结束且 `complete=true` 的轮次，重复会话去重、跨会话重复分段排除；按剧本、难度、配置偶像、歌曲与完整代码指纹分组。事件按候选出现的决策次数、奖励按每页唯一库条目统计选择频率，预览重试不增加分母。身份未知、选择未核对和未采集字段分别保留，不把选择输入当作实际获得。
 
