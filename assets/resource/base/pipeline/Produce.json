@@ -869,6 +869,7 @@
             "[JumpBack]ProduceCardsFlag",
             "[JumpBack]ProduceChooseGetFlag",
             "[JumpBack]ProduceChooseRewardExternal",
+            "[JumpBack]ProduceDeckEditExternal",
             "[JumpBack]ProduceChooseStrengthenFlag",
             "[JumpBack]ProduceChooseDeleteFlag",
             "[JumpBack]ProduceShoppingFlag",
@@ -1182,6 +1183,20 @@
         },
         "pre_delay": 0,
         "post_delay": 0
+    },
+    "ProduceDeckEditExternal": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "ProduceDeckEditExternalReady"
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "ProduceDeckEditExternal"
+            }
+        }
     },
     "ProduceChooseStrengthenFlag": {
         "recognition": {

@@ -10,7 +10,7 @@ from maa.context import Context
 from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
 
-from .decider import ExternalDecider
+from .decider import ExternalDecider, run_interactive
 
 
 @AgentServer.custom_action("ProduceChooseWorkAuto")
@@ -482,6 +482,22 @@ class ProduceKeepDrinkAuto(CustomAction):
         context: Context,
         argv: CustomAction.RunArg,
     ) -> bool:
+        decider = ExternalDecider.load()
+        if decider and decider.handles("drink_keep"):
+            # 外部决策：由决策者选择保留哪些饮料；保留窗口消失即完成，未完成时继续执行原有逻辑
+            def window_closed(frame):
+                flag = context.run_recognition("ProduceKeepDrinkFlag", frame)
+                return not (flag and flag.hit)
+
+            if not run_interactive(
+                context, decider, "drink_keep", is_done=window_closed,
+                session_key=f"drink-keep-{time.strftime('%Y%m%d-%H%M%S')}", screen_info={"type": "drink_keep"},
+            ):
+                return False
+            if window_closed(context.tasker.controller.post_screencap().wait().get()):
+                return True
+            logger.info("保留饮料未由决策者完成，改用原有逻辑")
+
         image = context.tasker.controller.post_screencap().wait().get()
         reco_detail = context.run_recognition("ProduceRecognitionUncheckedMark", image)
         if reco_detail.hit:

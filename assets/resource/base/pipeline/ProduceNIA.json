@@ -16,6 +16,7 @@
       "[JumpBack]ProduceCardsFlag",
       "[JumpBack]ProduceRecognitionWorkOptions",
       "[JumpBack]ProduceChooseGetFlag",
+      "[JumpBack]ProduceDeckEditExternal",
       "[JumpBack]ProduceChooseStrengthenFlag",
       "[JumpBack]ProduceChooseDeleteFlag",
       "[JumpBack]ProduceWorkFlag",
@@ -204,6 +205,7 @@
       "ProduceGuideFlag",
       "[JumpBack]ProduceGuideStart",
       "[JumpBack]ProduceChooseGetFlag",
+      "[JumpBack]ProduceDeckEditExternal",
       "[JumpBack]ProduceChooseStrengthenFlag",
       "[JumpBack]Click_1"
     ]

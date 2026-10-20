@@ -6,7 +6,7 @@ from utils import logger
 from produce.battle import ProduceCardsAuto
 from produce.events import ProduceChooseEventAuto, ProduceChooseEventBase, ProduceChooseNIAEventAuto
 from produce.console import policy_name
-from produce.decider import ExternalDecider
+from produce.decider import ExternalDecider, run_interactive
 from produce.options import ProduceKeepDrinkAuto, ProduceChooseWorkAuto, ProduceChooseMirrorAuto, ProduceChooseOptionsAuto
 from produce.rewards import RewardPreview, reward_layout
 from produce.sessions import SESSIONS
@@ -18,7 +18,7 @@ __all__ = [
     "ProduceChooseEventBase", "ProduceChooseEventAuto", "ProduceChooseNIAEventAuto", "ProduceCardsAuto",
     "ProduceChooseWorkAuto", "ProduceChooseOptionsAuto", "ProduceChooseMirrorAuto", "ProduceKeepDrinkAuto", "ProduceRewardConfirm",
     "ProduceRewardExternalReady", "ProduceChooseRewardExternal", "ProduceCustomizeExternalReady", "ProduceCustomizeExternal",
-    "ProduceConsultExternal",
+    "ProduceConsultExternal", "ProduceDeckEditExternalReady", "ProduceDeckEditExternal",
 ]
 
 
@@ -30,60 +30,73 @@ class ProduceConsultExternal(CustomAction):
     点击只允许落在安全区域：画面中部与底部操作按钮带；顶部状态栏与最底部菜单栏（可进入放弃培育等菜单）不可点击。
     """
 
-    SAFE_AREAS = ([0, 150, 720, 880], [0, 1030, 720, 110])
-    MAX_STEPS = 50
-    STEP_DELAY = 1.5
-
     def run(self, context, argv):
         decider = ExternalDecider.load()
         if not decider:
             return True
-        session_key = f"consult-{time.strftime('%Y%m%d-%H%M%S')}"
-        invalid = 0
-        for step in range(self.MAX_STEPS):
-            if context.tasker.stopping:
-                return False
-            image = context.tasker.controller.post_screencap().wait().get()
-            candidates = [
-                {"id": "tap", "label": "点击画面中的一个位置（答复须给出 x、y；只能落在安全区域内）", "box": self.SAFE_AREAS[0]},
-                {"id": "scroll_down", "label": "向下滚动列表", "box": self.SAFE_AREAS[0]},
-                {"id": "scroll_up", "label": "向上滚动列表", "box": self.SAFE_AREAS[0]},
-                {"id": "wait", "label": "等待画面变化", "box": [0, 0, 0, 0]},
-                {"id": "done", "label": "相谈已结束、已回到周行动选择画面", "box": [0, 0, 0, 0]},
-            ]
-            chosen = decider.ask(
-                "consult", image, candidates, fallback="wait",
-                state={"safe_areas": [list(area) for area in self.SAFE_AREAS]},
-                context={"session_key": session_key, "step": step}, stopping=lambda: context.tasker.stopping,
-            )
-            if context.tasker.stopping:
-                return False
-            if not chosen:
-                invalid += 1
-                if invalid >= 3:
-                    logger.warning("相谈：决策者多次无有效答复，交还主循环")
-                    return True
-                time.sleep(self.STEP_DELAY)
-                continue
-            action = chosen["id"]
-            if action == "done":
-                return True
-            if action == "tap":
-                x, y = chosen.get("point") or (None, None)
-                if x is None or not any(ax <= x <= ax + aw and ay <= y <= ay + ah for ax, ay, aw, ah in self.SAFE_AREAS):
-                    invalid += 1
-                    logger.warning(f"相谈：点击坐标不在安全区域 {chosen.get('point')}")
-                    if invalid >= 3:
-                        return True
-                    continue
-                context.tasker.controller.post_click(x, y).wait()
-            elif action in ("scroll_down", "scroll_up"):
-                begin, end = (800, 500) if action == "scroll_down" else (500, 800)
-                context.tasker.controller.post_swipe(360, begin, 360, end, 500).wait()
-            else:
-                time.sleep(1.0)
-            time.sleep(self.STEP_DELAY)
-        logger.warning("相谈步数达到上限，交还主循环")
+        return run_interactive(
+            context, decider, "consult", is_done=lambda image: False,
+            session_key=f"consult-{time.strftime('%Y%m%d-%H%M%S')}", screen_info={"type": "consult"},
+        )
+
+
+DECK_EDIT_ICONS = {
+    "strengthen": "produce/strengthen_icon.png",
+    "delete": "produce/delete_icon.png",
+    "copy": "produce/copy_icon.png",
+    "exchange": "produce/exchange_icon.png",
+}
+
+
+def deck_edit_type(context, image):
+    """按左上角图标识别卡牌强化/删除/复制/变换画面，返回类型或 None。"""
+    for kind, template in DECK_EDIT_ICONS.items():
+        detail = context.run_recognition(
+            "ProduceDeckEditIcon", image,
+            pipeline_override={"ProduceDeckEditIcon": {"recognition": "TemplateMatch", "roi": [0, 28, 182, 58], "template": template}},
+        )
+        if detail and detail.hit:
+            return kind
+    return None
+
+
+@AgentServer.custom_recognition("ProduceDeckEditExternalReady")
+class ProduceDeckEditExternalReady(CustomRecognition):
+    """外部决策启用（deck_edit）且处于卡牌强化/删除/复制/变换画面时命中，否则交给原有的固定位置节点。"""
+
+    def analyze(self, context, argv):
+        decider = ExternalDecider.load()
+        if not decider or not decider.handles("deck_edit"):
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "外部决策未启用"})
+        kind = deck_edit_type(context, argv.image)
+        if not kind:
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "非卡牌编辑画面"})
+        return CustomRecognition.AnalyzeResult(box=[0, 28, 182, 58], detail={"detail": kind})
+
+
+@AgentServer.custom_action("ProduceDeckEditExternal")
+class ProduceDeckEditExternal(CustomAction):
+    """
+    卡牌强化/删除/复制/变换：由外部决策者逐步选择目标卡并确认，画面左上角图标消失即视为完成。
+
+    决策者未完成时回退原有的 ProduceChooseStrengthenFlag / ProduceChooseDeleteFlag 固定位置流程，避免主循环反复进入本节点。
+    """
+
+    def run(self, context, argv):
+        decider = ExternalDecider.load()
+        image = context.tasker.controller.post_screencap().wait().get()
+        kind = deck_edit_type(context, image)
+        if not decider or not kind:
+            return True
+        finished = run_interactive(
+            context, decider, "deck_edit", is_done=lambda frame: deck_edit_type(context, frame) is None,
+            session_key=f"deck-edit-{time.strftime('%Y%m%d-%H%M%S')}", screen_info={"type": kind},
+        )
+        if not finished:
+            return False
+        if deck_edit_type(context, context.tasker.controller.post_screencap().wait().get()):
+            logger.info("卡牌编辑未由决策者完成，改用原有流程")
+            context.run_task("ProduceChooseStrengthenFlag" if kind == "strengthen" else "ProduceChooseDeleteFlag")
         return True
 
 
