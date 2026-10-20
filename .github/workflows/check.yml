@@ -19,13 +19,22 @@ on:
 
 jobs:
   resource:
-    runs-on: windows-latest
+    # Linux 文件系统区分大小写，可发现 Windows 上无法暴露的路径大小写问题；版本固定原因同 install.yml
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       # pip install maafw（动态取 PyPI 最新 stable 版本固定安装，与发布包保持一致）
       - name: Resolve maafw version from PyPI
@@ -38,9 +47,26 @@ jobs:
 
       - name: Install maafw
         run: |
-            python -m pip install --upgrade pip
-            python -m pip install "maafw==${{ steps.maa_version.outputs.maafw_version }}"
+          python -m pip install --upgrade pip
+          python -m pip install "maafw==${{ steps.maa_version.outputs.maafw_version }}"
 
+      # 按 interface.json 声明的全部资源组合加载（官服、插件版汉化、DMM、DMM插件汉化版）
       - name: Check Resource
         run: |
-            python ./tools/ci/check_resource.py ./assets/resource/base/
+          python ./tools/ci/check_resource.py --interface ./assets/interface.json
+
+  interface:
+    runs-on: ubuntu-24.04
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # 静态检查任务入口、pipeline_override 目标节点、Custom 名称、模板与路径大小写，无需安装 maafw
+      - name: Check Interface References
+        run: |
+          python ./tools/ci/check_interface.py

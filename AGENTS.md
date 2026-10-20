@@ -100,10 +100,11 @@ python -m pytest
 python -m ruff check .
 npx prettier --check "**/*.{json,yml,yaml}"
 npx maa-tools check
-python tools/ci/check_resource.py ./assets/resource/base/
+python tools/ci/check_resource.py --interface ./assets/interface.json
+python tools/ci/check_interface.py
 ```
 
-`py_compile` 接受文件路径，不能用来编译整个 `agent` 目录；目录检查使用 `compileall`。资源 CI（`.github/workflows/check.yml`）实际运行 `tools/ci/check_resource.py`，需要安装 `maafw`。
+`py_compile` 接受文件路径，不能用来编译整个 `agent` 目录；目录检查使用 `compileall`。资源 CI（`.github/workflows/check.yml`）在 Windows 与 Linux 上运行 `tools/ci/check_resource.py --interface`，按 `interface.json` 声明的全部资源组合加载，需要安装 `maafw`；`tools/ci/check_interface.py` 只用标准库，静态检查任务入口、`pipeline_override` 目标节点、覆盖层新增节点、Custom 名称、模板/模型文件及路径大小写，MaaFramework 加载资源时不会检查这些内容。
 
 如果本地缺少测试目录或依赖，说明无法完整执行对应检查即可，不要为了通过检查凭空创建无关测试。仅修改 Markdown 时检查内容、引用路径与 `git diff --check`，无需运行 Python 或流水线检查。
 
@@ -181,7 +182,7 @@ python tools/ci/check_resource.py ./assets/resource/base/
 改动完成后，根据影响范围选择验证：
 
 - Python 自定义逻辑：至少运行 `python -m compileall -q agent`；修改工具脚本时对对应文件执行 `python -m py_compile <脚本路径>`，有测试时运行 `python -m pytest`。
-- 流水线或资源：运行 `npx maa-tools check`，并在可能时进行实际 MaaFramework 调试。
+- 流水线或资源：运行 `npx maa-tools check`、`python tools/ci/check_interface.py` 与 `python tools/ci/check_resource.py --interface ./assets/interface.json`，并在可能时进行实际 MaaFramework 调试。
 - JSON/YAML：运行 Prettier 检查或格式化。
 - 自动培育：需要真实设备或模拟器长流程验证；如果无法运行，必须在交付说明中明确未做实机验证。
 
