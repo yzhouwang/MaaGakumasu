@@ -290,6 +290,11 @@ class ProduceChooseEventBase(CustomAction):
         time.sleep(self.CLICK_DELAY)
         context.tasker.controller.post_click(x, y).wait()
         time.sleep(self.ACTION_DELAY)
+        if run_task == "ProduceShoppingEntry":
+            # 外部决策启用 consult 时由决策者逐步操作相谈画面（LEGEND 的相谈界面与原有商店流程不同）
+            decider = ExternalDecider.load()
+            if decider and decider.handles("consult"):
+                run_task = "ProduceConsultExternal"
         if run_task:
             logger.info(f"执行任务{run_task}")
             context.run_task(run_task)

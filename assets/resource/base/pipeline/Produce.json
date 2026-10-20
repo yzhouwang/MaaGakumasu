@@ -1013,6 +1013,18 @@
             }
         }
     },
+    "ProduceConsultExternal": {
+        "recognition": {
+            "type": "DirectHit",
+            "param": {}
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "ProduceConsultExternal"
+            }
+        }
+    },
     "ProduceChooseFirst": {
         "recognition": {
             "type": "DirectHit",
