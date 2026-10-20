@@ -61,7 +61,8 @@
                 "param": {
                   "template": [
                     "produce/produce_mainpage_hajime.png"
-                  ]
+                  ],
+                  "threshold": 0.9
                 }
               }
             },
@@ -81,7 +82,8 @@
                 "param": {
                   "template": [
                     "produce/produce_mainpage_hajime.png"
-                  ]
+                  ],
+                  "threshold": 0.9
                 }
               }
             },
@@ -101,12 +103,49 @@
                 "param": {
                   "template": [
                     "produce/produce_mainpage_hajime.png"
-                  ]
+                  ],
+                  "threshold": 0.9
                 }
               }
             },
             "ProduceChooseDifficulty": {
               "expected": "MASTER"
+            },
+            "ProduceEntryFlag": {
+              "next": "ProduceEntry"
+            }
+          }
+        },
+        {
+          "name": "LEGEND",
+          "pipeline_override": {
+            "ProduceChooseScenario": {
+              "recognition": {
+                "param": {
+                  "template": [
+                    "produce/produce_mainpage_hajime_legend.png"
+                  ]
+                }
+              }
+            },
+            "ProduceSwitchHajimeMode": {
+              "recognition": {
+                "param": {
+                  "roi": [
+                    120,
+                    120,
+                    480,
+                    480
+                  ],
+                  "template": [
+                    "produce/produce_mainpage_hajime.png"
+                  ],
+                  "threshold": 0.9
+                }
+              }
+            },
+            "ProduceChooseDifficulty": {
+              "expected": "LEGEND"
             },
             "ProduceEntryFlag": {
               "next": "ProduceEntry"

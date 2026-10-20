@@ -162,6 +162,7 @@
         },
         "next": [
             "ProduceChooseScenario",
+            "[JumpBack]ProduceSwitchHajimeMode",
             "[JumpBack]ProduceLastPage",
             "[JumpBack]ProduceNextPage"
         ]
@@ -238,6 +239,35 @@
                         1,
                         1
                     ]
+                ]
+            }
+        },
+        "post_wait_freezes": 200
+    },
+    "ProduceSwitchHajimeMode": {
+        "max_hit": 2,
+        "recognition": {
+            "type": "TemplateMatch",
+            "param": {
+                "roi": [
+                    150,
+                    420,
+                    420,
+                    180
+                ],
+                "template": [
+                    "produce/produce_mainpage_hajime_legend.png"
+                ]
+            }
+        },
+        "action": {
+            "type": "Click",
+            "param": {
+                "target": [
+                    45,
+                    715,
+                    80,
+                    80
                 ]
             }
         },
