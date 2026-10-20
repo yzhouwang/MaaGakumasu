@@ -82,7 +82,12 @@ class Decider:
         self.args = args
         self.mailbox = (ROOT / args.mailbox).resolve()
         self.sessions = {}
-        self.notes = []
+        self.notes_path = self.mailbox / "notes.json"
+        try:
+            # 备注写盘保存，决策者重启后仍保留本轮培育的牌组与饮料记录
+            self.notes = json.loads(self.notes_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.notes = []
         self.reader = None
         self.system_prompt = (Path(__file__).with_name("system_prompt.md")).read_text(encoding="utf-8")
         for extra in args.extra_prompt or []:
@@ -118,7 +123,7 @@ class Decider:
             lines.append(description)
         lines.append(f"Fallback (old rule-based choice): {request.get('fallback')}")
         if self.notes:
-            lines.append("Your notes so far: " + " | ".join(self.notes[-12:]))
+            lines.append("Your notes so far: " + " | ".join(self.notes[-20:]))
         return "\n".join(lines)
 
     def call_model(self, key: str, prompt: str) -> dict:
@@ -178,6 +183,7 @@ class Decider:
                             response[axis] = answer[axis]
                     if answer.get("notes"):
                         self.notes.append(answer["notes"])
+                        write_atomic(self.notes_path, self.notes)
                 else:
                     response["reason"] = f"model answered unknown id {answer.get('choice')!r}"
                     response["meta"] = answer.get("_meta")
