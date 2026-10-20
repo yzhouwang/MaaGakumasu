@@ -26,6 +26,7 @@ python research/produce/build_buff_templates.py --capture-root <采集目录> --
 python research/produce/analyze_choices.py <已验收报告根目录> --output debug/research/produce/baseline
 python research/produce/test_reporting.py
 python research/produce/test_produce_decisions.py
+python research/produce/test_external_decider.py
 ```
 
 `capture_battle.py` 是显式启动的只读 ADB 旁路采样入口，参数见 `--help`；不会因生成报告或运行测试而启动。它使用可选开发依赖 OpenCV，模板取样使用 Pillow，均不增加客户端运行依赖。详细操作见 [出牌数据采集](../docs/zh_cn/出牌数据采集.md)。

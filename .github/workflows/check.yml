@@ -61,6 +61,7 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           python ./research/produce/test_produce_decisions.py
+          python ./research/produce/test_external_decider.py
 
   interface:
     runs-on: ubuntu-24.04
