@@ -9,6 +9,7 @@ from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
 
 from .capture import DecisionCapture
+from .decider import ExternalDecider
 from .sessions import SESSIONS
 
 
@@ -121,6 +122,11 @@ class ProduceCardsAuto(CustomAction):
         logger.success("事件: 退出出牌")
 
     def _run(self, context: Context, argv: CustomAction.RunArg) -> bool:
+        # 外部决策启用时，饮料与跳过都作为候选交给决策者，不再在开局一次性使用全部饮料
+        decider = ExternalDecider.load()
+        decider = decider if decider and decider.handles("battle") else None
+        battle_key = time.strftime("%Y%m%d-%H%M%S")
+
         # 使用饮料
         self._wait_until_playable(context)
         image = context.tasker.controller.post_screencap().wait().get()
@@ -129,7 +135,7 @@ class ProduceCardsAuto(CustomAction):
         hit_count = len(reco_detail.filtered_results)  # 获取饮料数
         self._record("battle_entry", image, drink_detections=hit_count)
         logger.info(f"识别到{hit_count}瓶饮料")
-        for _ in range(hit_count):
+        for _ in range(0 if decider else hit_count):
             self._begin_decision("use_drink_task", image, reason="existing_use_all_drinks")
             context.run_task("ProduceUseDrink")
             playable = self._wait_until_playable(context, 2)
@@ -163,6 +169,12 @@ class ProduceCardsAuto(CustomAction):
                 # 获取卡牌信息
                 suggestions, useless, cards, suggestions_box, best_box = self._get_card_info(results)
                 # print(f"卡片数量:{suggestions}/{cards}/{useless}")
+
+                if decider:
+                    fallback_box = suggestions_box if suggestions > 0 else best_box if cards == 1 else None
+                    if self._decide_externally(context, decider, image, results, fallback_box, battle_key):
+                        time.sleep(self.CLICK_DELAY)
+                        continue
 
                 # 有推荐牌时，打出推荐牌
                 if suggestions > 0:
@@ -282,6 +294,57 @@ class ProduceCardsAuto(CustomAction):
         self._finish_decision(playable)
         self._reset_window()
 
+        return True
+
+    def _decide_externally(self, context: Context, decider, image, results, fallback_box, battle_key) -> bool:
+        """
+        把当前回合的合法操作交给外部决策者并执行其选择
+
+        Returns:
+            bool: 已执行一个操作返回 True；候选不足或没有有效答复时返回 False，由原有逻辑继续处理。
+        """
+        candidates = [
+            {
+                "id": f"card_{index}",
+                "label": "出牌",
+                "box": [int(value) for value in result.box],
+                "detector_label": result.label,
+                "detector_confidence": round(float(result.score), 3),
+            }
+            for index, result in enumerate(results)
+            if result.label in ("cards", "suggestions") and self.CARD_Y_MIN <= result.box[1] <= self.CARD_Y_MAX
+        ]
+        drinks = context.run_recognition("ProduceCheckDrinkButton", image)
+        for index, result in enumerate(drinks.filtered_results if drinks and drinks.hit else []):
+            candidates.append({"id": f"drink_{index}", "label": "使用饮料", "box": [int(value) for value in result.box]})
+        skip = context.run_recognition("ProduceRecognitionSkipRound", image)
+        if skip and skip.hit:
+            candidates.append({"id": "skip", "label": "跳过回合", "box": [int(value) for value in skip.best_result.box]})
+        if len(candidates) <= 1:
+            return False
+
+        fallback = next((item["id"] for item in candidates if fallback_box is not None and item["box"] == [int(v) for v in fallback_box]), None)
+        unplayable = [[int(value) for value in result.box] for result in results if result.label == "useless"]
+        chosen = decider.ask(
+            "battle", image, candidates, fallback=fallback,
+            state={"unplayable_card_boxes": unplayable},
+            context={"battle_id": battle_key}, stopping=lambda: context.tasker.stopping,
+        )
+        if chosen is None:
+            return False
+
+        box = chosen["box"]
+        if chosen["id"].startswith("card_"):
+            self._play_a_card(context, box, image, results, "external_decider")
+        elif chosen["id"].startswith("drink_"):
+            self._begin_decision("use_drink_task", image, results, reason="external_decider", selected_box=box)
+            context.run_task("ProduceUseDrink", pipeline_override={"ProduceUseDrink": {"action": {"param": {"target": box}}}})
+            self._finish_decision(self._wait_until_playable(context, 2))
+        else:
+            self._begin_decision("skip_round", image, results, reason="external_decider")
+            context.run_task("ProduceRecognitionSkipRound")
+            self._finish_decision(self._wait_until_playable(context))
+            self._reset_window()
         return True
 
     def _handle_move_cards(self, context: Context, image=None) -> bool:

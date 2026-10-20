@@ -9,6 +9,7 @@ from maa.context import Context
 from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
 
+from .decider import ExternalDecider
 from .sessions import SESSIONS
 
 
@@ -80,6 +81,8 @@ class ProduceChooseEventBase(CustomAction):
                 logger.info("无可用事件")
                 return True
 
+        best_event = self._ask_external(context, image, events, best_event, suggestion, health_data, points, score) or best_event
+
         box = best_event["box"]
         logger.info(f"选择事件: {best_event['name']}, 坐标: ({box[0] + box[2] // 2}, {box[1] + box[3] // 2})")
         session = SESSIONS.get(context)
@@ -96,6 +99,42 @@ class ProduceChooseEventBase(CustomAction):
             session["capture"].record("produce_event_input_result", decision_id=choice_id,
                                       framework_action_succeeded=result, game_action_confirmed=None)
         return result
+
+    def _ask_external(self, context: Context, image, events, best_event, suggestion, health_data, points, score) -> Optional[dict]:
+        """外部决策启用时，把本周可选行动交给决策者；无有效答复时返回 None，沿用原有选择。"""
+        decider = ExternalDecider.load()
+        if not decider or not decider.handles("week"):
+            return None
+        attributes = ("Vo", "Da", "Vi")
+        candidates = []
+        for event in events:
+            for key, box in event.items():
+                if key == "SP" or not isinstance(box, list):
+                    continue
+                if key in attributes:
+                    sp = bool(event.get("SP"))
+                    candidates.append({"id": key, "label": f"{key} 课程" + ("（SP）" if sp else ""), "box": box, "sp": sp})
+                else:
+                    candidates.append({"id": key, "label": key, "box": box})
+        if self._is_rest_available(context, image):
+            candidates.append({"id": "rest", "label": "休息", "box": [0, 0, 0, 0]})
+        if len(candidates) <= 1:
+            return None
+        fallback = "rest" if best_event.get("run_task") == "ProduceChooseRest" else best_event["name"].removesuffix("_SP")
+        chosen = decider.ask(
+            "week",
+            image,
+            candidates,
+            fallback=fallback,
+            state={"teacher_suggestion": suggestion, "stamina": health_data, "points": points, "parameters": score},
+            context={"first_attribute": self.first, "second_attribute": self.second, "scenario_class": type(self).__name__},
+            stopping=lambda: context.tasker.stopping,
+        )
+        if not chosen:
+            return None
+        if chosen["id"] == "rest":
+            return {"name": "rest", "box": [0, 0, 0, 0], "run_task": "ProduceChooseRest"}
+        return self._make_event(chosen["id"], chosen["box"])
 
     def _get_preference(self, context: Context, argv: CustomAction.RunArg) -> dict:
         """获取偏好设置，默认从argv解析。"""
