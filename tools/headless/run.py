@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import time
+import signal
 import argparse
 import subprocess
 from copy import deepcopy
@@ -207,6 +208,9 @@ def main():
             raise SystemExit("Tasker 初始化失败")
         started = time.time()
         job = tasker.post_task(task["entry"], override)
+        # 后台启动（nohup … &）时 SIGINT 默认被忽略；显式把 SIGINT/SIGTERM 转为中断，保证能安全停止任务
+        for number in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(number, signal.default_int_handler)
         try:
             # 轮询而不是阻塞在原生 wait() 中，保证 Ctrl+C / SIGINT 能被及时处理
             while not job.done:
