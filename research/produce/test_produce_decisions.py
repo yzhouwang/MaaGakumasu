@@ -135,6 +135,16 @@ class EventPriorityTest(unittest.TestCase):
         self.assertEqual(self.choose([{"未知": [9, 9, 9, 9]}])["name"], "未知")
         self.assertIsNone(self.choose([]))
 
+    def test_rest_needs_button_on_screen_and_remaining_uses(self):
+        # 初 LEGEND 的课程周与授業周没有休息按钮，此时不可休息
+        def context(button, used_up=False):
+            hits = {"ProduceChooseRest": button, "ProduceRecognitionRestCount": used_up}
+            return SimpleNamespace(run_recognition=lambda name, image, pipeline_override=None: SimpleNamespace(hit=hits[name]))
+
+        self.assertTrue(self.chooser._is_rest_available(context(True), None))
+        self.assertFalse(self.chooser._is_rest_available(context(False), None))
+        self.assertFalse(self.chooser._is_rest_available(context(True, used_up=True), None))
+
 
 class NIAEventPriorityTest(unittest.TestCase):
     """ProduceChooseNIAEventAuto：营业在 SP 之后、属性课程之前；指导在外出之后。"""

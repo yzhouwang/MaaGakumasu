@@ -150,7 +150,10 @@ class ProduceChooseEventBase(CustomAction):
             return {"first": "Vi", "second": "Da"}
 
     def _is_rest_available(self, context: Context, image) -> bool:
-        """检测休息是否可用：休息按钮剩余次数区域出现「あと0回」时不可休息。"""
+        """检测休息是否可用：画面上没有休息按钮（例如初 LEGEND 只有授業的周），或剩余次数区域出现「あと0回」时不可休息。"""
+        button = context.run_recognition("ProduceChooseRest", image)
+        if not (button and button.hit):
+            return False
         reco_detail = context.run_recognition(
             "ProduceRecognitionRestCount",
             image,
