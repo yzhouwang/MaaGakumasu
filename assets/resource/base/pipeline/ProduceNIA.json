@@ -291,8 +291,29 @@
       }
     },
     "next": [
-      "ProduceGuideExit"
+      "ProduceGuideExit",
+      "ProduceGuideLeft"
     ]
+  },
+  "ProduceGuideLeft": {
+    "recognition": {
+      "type": "TemplateMatch",
+      "param": {
+        "roi": [
+          0,
+          0,
+          260,
+          170
+        ],
+        "template": "produce/guide_header.png",
+        "threshold": 0.85,
+        "inverse": true
+      }
+    },
+    "action": {
+      "type": "DoNothing",
+      "param": {}
+    }
   },
   "ProduceGuideExit": {
     "recognition": {
@@ -304,7 +325,8 @@
     "action": {
       "type": "Click",
       "param": {}
-    }
+    },
+    "post_wait_freezes": 500
   },
   "ProduceMirrorFlag": {
     "recognition": {
