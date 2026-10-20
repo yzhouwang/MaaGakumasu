@@ -22,7 +22,13 @@ sys.path[:0] = [str(ROOT), str(ROOT / "agent")]
 
 ANSWER_SCHEMA = {
     "type": "object",
-    "properties": {"choice": {"type": "string"}, "reason": {"type": "string"}, "notes": {"type": "string"}},
+    "properties": {
+        "choice": {"type": "string"},
+        "reason": {"type": "string"},
+        "notes": {"type": "string"},
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+    },
     "required": ["choice", "reason"],
 }
 
@@ -161,11 +167,15 @@ class Decider:
         if self.args.dry_run:
             response["reason"] = "dry run"
         else:
-            key = request.get("context", {}).get("battle_id") or "campaign"
+            context = request.get("context", {})
+            key = context.get("session_key") or (context.get("battle_id") if request["kind"] == "battle" else None) or "campaign"
             try:
-                answer = self.call_model(key if request["kind"] == "battle" else "campaign", prompt)
+                answer = self.call_model(key, prompt)
                 if answer.get("choice") in ids:
                     response.update(choice=answer["choice"], reason=answer.get("reason", ""), source="model", meta=answer["_meta"])
+                    for axis in ("x", "y"):
+                        if isinstance(answer.get(axis), int):
+                            response[axis] = answer[axis]
                     if answer.get("notes"):
                         self.notes.append(answer["notes"])
                 else:
