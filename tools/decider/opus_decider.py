@@ -90,6 +90,8 @@ class Decider:
 
     def prompt_for(self, request: dict, reading: dict) -> str:
         lines = [f"Decision kind: {request['kind']}", f"Screenshot: {request['frame']}"]
+        for name, frame in (request.get("extra_frames") or {}).items():
+            lines.append(f"Detail screenshot {name}: {frame}")
         if request.get("context"):
             lines.append("Context: " + json.dumps(request["context"], ensure_ascii=False))
         if request.get("state"):

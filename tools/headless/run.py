@@ -208,11 +208,14 @@ def main():
         started = time.time()
         job = tasker.post_task(task["entry"], override)
         try:
-            detail = job.wait().get()
+            # 轮询而不是阻塞在原生 wait() 中，保证 Ctrl+C / SIGINT 能被及时处理
+            while not job.done:
+                time.sleep(0.5)
         except KeyboardInterrupt:
-            print("收到中断，停止任务…")
+            print("收到中断，停止任务…", flush=True)
             tasker.post_stop().wait()
             raise
+        detail = job.get()
         status = "成功" if job.succeeded else "失败"
         print(f"任务{status}，用时 {time.time() - started:.0f} 秒，最后节点：{detail.nodes[-1].name if detail and detail.nodes else '-'}")
         sys.exit(0 if job.succeeded else 1)
