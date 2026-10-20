@@ -15,6 +15,7 @@ import json
 import time
 import signal
 import argparse
+import threading
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -132,6 +133,36 @@ class Interface:
             show(name, 0)
 
 
+def watch_screencap_children(timeout: float, stop: threading.Event):
+    """
+    结束运行超时的 adb 截图子进程。
+
+    MuMu（macOS）上 `adb exec-out screencap` 偶尔永不返回，MaaFramework 的截图随之无限等待，整个任务卡住；
+    子进程结束后截图按失败处理，框架与 Agent 会重新截图。
+    """
+    first_seen = {}
+    while not stop.wait(5):
+        try:
+            output = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        now, alive = time.time(), set()
+        for line in output.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3 or int(parts[1]) != os.getpid() or "screencap" not in parts[2]:
+                continue
+            pid = int(parts[0])
+            alive.add(pid)
+            started = first_seen.setdefault(pid, now)
+            if now - started > timeout:
+                print(f"看门狗：截图子进程 {pid} 超过 {timeout:.0f} 秒未返回，已结束", flush=True)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        first_seen = {pid: seen for pid, seen in first_seen.items() if pid in alive}
+
+
 def find_device(serial: str):
     from maa.toolkit import Toolkit
 
@@ -153,6 +184,7 @@ def main():
     parser.add_argument("--log-dir", type=Path, default=ROOT / "debug" / "headless")
     parser.add_argument("--list-options", metavar="TASK")
     parser.add_argument("--dry-run", action="store_true", help="只打印 pipeline_override，不连接设备")
+    parser.add_argument("--screencap-timeout", type=float, default=20, help="adb 截图子进程超过此秒数未返回时结束它；0 表示不监视")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -196,6 +228,10 @@ def main():
         if not resource.post_bundle(path).wait().succeeded:
             raise SystemExit(f"资源加载失败：{path}")
 
+    stop_watch = threading.Event()
+    if args.screencap_timeout > 0:
+        threading.Thread(target=watch_screencap_children, args=(args.screencap_timeout, stop_watch), daemon=True).start()
+
     client = AgentClient()
     client.bind(resource)
     agent = subprocess.Popen([sys.executable, "-u", str(ROOT / "agent" / "main.py"), client.identifier], cwd=ROOT)
@@ -224,6 +260,7 @@ def main():
         print(f"任务{status}，用时 {time.time() - started:.0f} 秒，最后节点：{detail.nodes[-1].name if detail and detail.nodes else '-'}")
         sys.exit(0 if job.succeeded else 1)
     finally:
+        stop_watch.set()
         client.disconnect()
         agent.terminate()
         try:
