@@ -10,6 +10,8 @@ from maa.context import Context
 from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
 
+from .decider import ExternalDecider
+
 
 @AgentServer.custom_action("ProduceChooseWorkAuto")
 class ProduceChooseWorkAuto(CustomAction):
@@ -196,6 +198,26 @@ class ProduceChooseOptionsAuto(CustomAction):
                         break
                 if target_box:
                     break
+
+        # 外部决策启用时由决策者在识别到的选项中选择，原有随机选择作为 fallback
+        decider = ExternalDecider.load()
+        if decider and decider.handles("class_option") and sum(len(opt) for opt in options) > 1:
+            candidates = [
+                {"id": name, "label": "无属性选项" if name == "null" else f"{name} 选项", "box": box} for opt in options for name, box in opt.items()
+            ]
+            chosen = decider.ask(
+                "class_option",
+                image,
+                candidates,
+                fallback=choice if target_box else None,
+                state={"parameters": score},
+                context={"first_attribute": self.first, "second_attribute": self.second},
+                stopping=lambda: context.tasker.stopping,
+            )
+            if context.tasker.stopping:
+                return True
+            if chosen:
+                target_box, choice = chosen["box"], chosen["id"]
 
         # 执行双击
         if target_box:

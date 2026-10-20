@@ -64,19 +64,27 @@ class ExternalDecider:
     def handles(self, kind: str) -> bool:
         return kind in self.kinds
 
-    def ask(self, kind: str, image, candidates: list, fallback=None, state=None, context=None, stopping=None):
-        """提交请求并等待答复；返回选中的候选（附 reason），无有效答复时返回 None。"""
+    def ask(self, kind: str, image, candidates: list, fallback=None, state=None, context=None, stopping=None, extra_images=None):
+        """提交请求并等待答复；返回选中的候选（附 reason），无有效答复时返回 None。
+
+        extra_images 为 {名称: 截图}，例如奖励逐个预览后的详情画面，写入 frames/ 并在请求的 extra_frames 中列出。
+        """
         if not candidates:
             return None
         request_id = f"{self.session}-{next(self._counter):05d}"
         frame = f"frames/{request_id}.png"
         try:
             _write_atomic(self.mailbox / frame, encode_png(image))
+            extra_frames = {}
+            for name, extra in (extra_images or {}).items():
+                extra_frames[name] = f"frames/{request_id}-{name}.png"
+                _write_atomic(self.mailbox / extra_frames[name], encode_png(extra))
             request = {
                 "id": request_id,
                 "kind": kind,
                 "created_at": time.time(),
                 "frame": frame,
+                "extra_frames": extra_frames,
                 "candidates": candidates,
                 "fallback": fallback,
                 "state": state or {},

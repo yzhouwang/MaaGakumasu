@@ -82,6 +82,8 @@ class ProduceChooseEventBase(CustomAction):
                 return True
 
         best_event = self._ask_external(context, image, events, best_event, suggestion, health_data, points, score) or best_event
+        if context.tasker.stopping:
+            return True
 
         box = best_event["box"]
         logger.info(f"选择事件: {best_event['name']}, 坐标: ({box[0] + box[2] // 2}, {box[1] + box[3] // 2})")

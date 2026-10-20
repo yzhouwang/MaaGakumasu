@@ -990,11 +990,26 @@
             "Node.Recognition.Succeeded": "[color:LimeGreen]事件: 选择饮料/物品/卡牌[/color]"
         },
         "next": [
+            "ProduceChooseRewardExternal",
             "ProduceChooseSkip",
             "ProduceChooseRecommend",
             "ProduceChooseEventRecommend",
             "ProduceChooseFirst"
         ]
+    },
+    "ProduceChooseRewardExternal": {
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "ProduceRewardExternalReady"
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "ProduceChooseRewardExternal"
+            }
+        }
     },
     "ProduceChooseFirst": {
         "recognition": {

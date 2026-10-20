@@ -1,19 +1,96 @@
 """MaaFramework 培育动作入口及奖励领取适配。"""
 
+import time
+
 from utils import logger
 from produce.battle import ProduceCardsAuto
 from produce.events import ProduceChooseEventAuto, ProduceChooseEventBase, ProduceChooseNIAEventAuto
 from produce.console import policy_name
+from produce.decider import ExternalDecider
 from produce.options import ProduceKeepDrinkAuto, ProduceChooseWorkAuto, ProduceChooseMirrorAuto, ProduceChooseOptionsAuto
-from produce.rewards import RewardPreview
+from produce.rewards import RewardPreview, reward_layout
 from produce.sessions import SESSIONS
 from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
+from maa.custom_recognition import CustomRecognition
 
 __all__ = [
     "ProduceChooseEventBase", "ProduceChooseEventAuto", "ProduceChooseNIAEventAuto", "ProduceCardsAuto",
     "ProduceChooseWorkAuto", "ProduceChooseOptionsAuto", "ProduceChooseMirrorAuto", "ProduceKeepDrinkAuto", "ProduceRewardConfirm",
+    "ProduceRewardExternalReady", "ProduceChooseRewardExternal",
 ]
+
+
+@AgentServer.custom_recognition("ProduceRewardExternalReady")
+class ProduceRewardExternalReady(CustomRecognition):
+    """外部决策启用（reward）且能定位到 2–4 个奖励候选时命中，否则交给原有选择节点。"""
+
+    def analyze(self, context, argv):
+        decider = ExternalDecider.load()
+        if not decider or not decider.handles("reward"):
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "外部决策未启用"})
+        layout = reward_layout(argv.image)
+        if len(layout["candidates"]) < 2:
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": f"奖励布局未就绪：{layout['status']}"})
+        return CustomRecognition.AnalyzeResult(box=layout["candidates"][0]["box"], detail={"detail": layout["status"]})
+
+
+@AgentServer.custom_action("ProduceChooseRewardExternal")
+class ProduceChooseRewardExternal(CustomAction):
+    """
+    逐个点选奖励候选并截取详情画面，连同可用的「不领取」交给外部决策者，按答复选择后领取。
+
+    点选只改变选中项，不会领取；没有有效答复时禁用本节点重新执行原有选择流程。
+    """
+
+    PREVIEW_DELAY = 0.8
+
+    def run(self, context, argv):
+        decider = ExternalDecider.load()
+        image = context.tasker.controller.post_screencap().wait().get()
+        offers = reward_layout(image)["candidates"]
+        if not decider or len(offers) < 2:
+            return self.fallback(context)
+        previews = {}
+        for index, offer in enumerate(offers):
+            x, y, w, h = offer["box"]
+            context.tasker.controller.post_click(x + w // 2, y + h // 2).wait()
+            time.sleep(self.PREVIEW_DELAY)
+            previews[f"offer{index + 1}"] = context.tasker.controller.post_screencap().wait().get().copy()
+            if context.tasker.stopping:
+                return False
+        candidates = [
+            {"id": offer["candidate_id"], "label": f"第 {index + 1} 个奖励（详情见 offer{index + 1} 截图）", "box": offer["box"]}
+            for index, offer in enumerate(offers)
+        ]
+        skip = context.run_recognition("ProduceChooseSkip", image)
+        if skip and skip.hit:
+            candidates.append({"id": "skip", "label": "不领取", "box": [int(v) for v in skip.best_result.box]})
+        recommended = context.run_recognition("ProduceChooseRecommend", image)
+        fallback = "skip" if skip and skip.hit else candidates[0]["id"]
+        if not (skip and skip.hit) and recommended and recommended.hit:
+            rx, ry, rw, rh = recommended.best_result.box
+            point = (rx + rw // 2, ry + rh // 2 - 80)
+            fallback = next((c["id"] for c in candidates if c["box"][0] <= point[0] <= c["box"][0] + c["box"][2]), fallback)
+        chosen = decider.ask(
+            "reward", image, candidates, fallback=fallback, extra_images=previews,
+            state={"game_recommended": bool(recommended and recommended.hit)}, stopping=lambda: context.tasker.stopping,
+        )
+        if context.tasker.stopping:
+            return False
+        if not chosen:
+            return self.fallback(context)
+        x, y, w, h = chosen["box"]
+        context.tasker.controller.post_click(x + w // 2, y + h // 2).wait()
+        time.sleep(self.PREVIEW_DELAY)
+        context.run_task("ProduceChooseConfirm")
+        return True
+
+    @staticmethod
+    def fallback(context):
+        logger.info("奖励改用原有选择")
+        context.run_task("ProduceChooseGetFlag", pipeline_override={"ProduceChooseRewardExternal": {"enabled": False}})
+        return True
 
 
 @AgentServer.custom_action("ProduceRewardConfirm")

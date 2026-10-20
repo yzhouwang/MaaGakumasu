@@ -461,6 +461,7 @@
           "pipeline_override": {
             "ProduceChooseGetFlag": {
               "next": [
+                "ProduceChooseRewardExternal",
                 "ProduceChooseSkip",
                 "ProduceChooseRecommend",
                 "ProduceChooseEventRecommend",
@@ -475,6 +476,7 @@
           "pipeline_override": {
             "ProduceChooseGetFlag": {
               "next": [
+                "ProduceChooseRewardExternal",
                 "ProduceChooseSkip",
                 "ProduceChooseEventRecommend",
                 "ProduceChooseRecommend",
@@ -489,6 +491,7 @@
           "pipeline_override": {
             "ProduceChooseGetFlag": {
               "next": [
+                "ProduceChooseRewardExternal",
                 "ProduceChooseSkip",
                 "ProduceChooseFirst"
               ]

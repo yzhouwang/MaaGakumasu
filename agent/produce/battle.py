@@ -330,6 +330,9 @@ class ProduceCardsAuto(CustomAction):
             state={"unplayable_card_boxes": unplayable},
             context={"battle_id": battle_key}, stopping=lambda: context.tasker.stopping,
         )
+        if context.tasker.stopping:
+            # 任务停止时不再执行任何操作，交给循环开头的停止检查退出
+            return True
         if chosen is None:
             return False
 
