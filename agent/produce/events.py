@@ -496,10 +496,12 @@ class ProduceChooseEventAuto(ProduceChooseEventBase):
         "上课": "produce/lesson.png",
         "活动": "produce/event.png",
         "外出": "produce/go_out.png",
+        "指导": "produce/NIA/guide.png",
     }
 
     RUN_TASK_MAP = {
         "交谈": "ProduceShoppingEntry",
+        "指导": "ProduceGuideEntry",
     }
 
     def _get_preference(self, context: Context, argv: CustomAction.RunArg) -> dict:

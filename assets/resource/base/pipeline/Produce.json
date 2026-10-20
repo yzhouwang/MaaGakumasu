@@ -874,6 +874,7 @@
             "[JumpBack]ProduceKeepDrinkFlag",
             "[JumpBack]ProduceRecognitionWorkOptions",
             "[JumpBack]ProduceSkipChatFlag",
+            "[JumpBack]ProduceGuideScreen",
             "[JumpBack]ProduceButton",
             "[JumpBack]ProduceSkip",
             "[JumpBack]Click_1"
@@ -953,7 +954,8 @@
                     "produce/chat.png",
                     "produce/lesson.png",
                     "produce/event.png",
-                    "produce/go_out.png"
+                    "produce/go_out.png",
+                    "produce/NIA/guide.png"
                 ]
             }
         },

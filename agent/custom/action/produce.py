@@ -17,8 +17,105 @@ from maa.custom_recognition import CustomRecognition
 __all__ = [
     "ProduceChooseEventBase", "ProduceChooseEventAuto", "ProduceChooseNIAEventAuto", "ProduceCardsAuto",
     "ProduceChooseWorkAuto", "ProduceChooseOptionsAuto", "ProduceChooseMirrorAuto", "ProduceKeepDrinkAuto", "ProduceRewardConfirm",
-    "ProduceRewardExternalReady", "ProduceChooseRewardExternal",
+    "ProduceRewardExternalReady", "ProduceChooseRewardExternal", "ProduceCustomizeExternalReady", "ProduceCustomizeExternal",
 ]
+
+
+@AgentServer.custom_recognition("ProduceCustomizeExternalReady")
+class ProduceCustomizeExternalReady(CustomRecognition):
+    """外部决策启用（customize）时命中特别指导的卡牌自定义画面，否则交给原有的「终了」节点。"""
+
+    def analyze(self, context, argv):
+        decider = ExternalDecider.load()
+        if not decider or not decider.handles("customize"):
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "外部决策未启用"})
+        return CustomRecognition.AnalyzeResult(box=[0, 0, 1, 1], detail={"detail": "特别指导自定义"})
+
+
+@AgentServer.custom_action("ProduceCustomizeExternal")
+class ProduceCustomizeExternal(CustomAction):
+    """
+    特别指导的卡牌自定义：逐步把当前画面与一组受限操作交给外部决策者，直到其选择结束。
+
+    可选操作只有：在卡牌网格内点选（选中卡牌，不消耗 P 点）、滚动网格、点选自定义选项、カスタマイズ、
+    実行する（消耗 P 点）、一覧に戻る、等待与结束。结束后由后续的 ProduceGuideExit 点击「終了」。
+    """
+
+    GRID = [40, 625, 640, 365]
+    MENU_ROIS = ([30, 470, 660, 130], [30, 775, 660, 140])
+    BUTTONS = {"customize": [235, 1050, 250, 70], "execute": [372, 1050, 252, 70], "back": [90, 1050, 252, 70]}
+    MAX_STEPS = 40
+    STEP_DELAY = 1.5
+
+    def run(self, context, argv):
+        decider = ExternalDecider.load()
+        if not decider:
+            return True
+        session_key = f"customize-{time.strftime('%Y%m%d-%H%M%S')}"
+        invalid = 0
+        for step in range(self.MAX_STEPS):
+            if context.tasker.stopping:
+                return False
+            image = context.tasker.controller.post_screencap().wait().get()
+            candidates = [
+                {"id": "tap_grid", "label": "点选卡牌网格中的一张卡（答复须给出 x、y，限网格区域内；只选中，不消耗 P 点）", "box": self.GRID},
+                {"id": "scroll_down", "label": "向下滚动卡牌网格", "box": self.GRID},
+                {"id": "scroll_up", "label": "向上滚动卡牌网格", "box": self.GRID},
+            ]
+            candidates += self._menu_options(context, image)
+            candidates += [
+                {"id": "customize", "label": "カスタマイズ（进入确认画面）", "box": self.BUTTONS["customize"]},
+                {"id": "execute", "label": "実行する（确认执行，消耗 P 点）", "box": self.BUTTONS["execute"]},
+                {"id": "back", "label": "一覧に戻る（取消并返回列表）", "box": self.BUTTONS["back"]},
+                {"id": "wait", "label": "等待画面变化", "box": [0, 0, 0, 0]},
+                {"id": "finish", "label": "结束特别指导（按「終了」）", "box": [0, 0, 0, 0]},
+            ]
+            chosen = decider.ask(
+                "customize", image, candidates, fallback="finish",
+                context={"session_key": session_key, "step": step}, stopping=lambda: context.tasker.stopping,
+            )
+            if context.tasker.stopping:
+                return False
+            if not chosen or chosen["id"] == "finish":
+                return True
+            action = chosen["id"]
+            if action == "tap_grid":
+                x, y = chosen.get("point") or (None, None)
+                gx, gy, gw, gh = self.GRID
+                if x is None or not (gx <= x <= gx + gw and gy <= y <= gy + gh):
+                    invalid += 1
+                    logger.warning(f"自定义：网格坐标无效 {chosen.get('point')}")
+                    if invalid >= 3:
+                        return True
+                    continue
+                context.tasker.controller.post_click(x, y).wait()
+            elif action in ("scroll_down", "scroll_up"):
+                begin, end = (900, 700) if action == "scroll_down" else (700, 900)
+                context.tasker.controller.post_swipe(360, begin, 360, end, 500).wait()
+            elif action == "wait":
+                time.sleep(1.0)
+            else:
+                bx, by, bw, bh = chosen["box"]
+                context.tasker.controller.post_click(bx + bw // 2, by + bh // 2).wait()
+            time.sleep(self.STEP_DELAY)
+        logger.warning("自定义步数达到上限，结束特别指导")
+        return True
+
+    def _menu_options(self, context, image):
+        """OCR 自定义菜单（列表画面与确认画面两处），按文字位置生成选项候选，附带 P 点花费。"""
+        options = []
+        for roi in self.MENU_ROIS:
+            detail = context.run_recognition(
+                "ProduceCustomizeMenuText", image, pipeline_override={"ProduceCustomizeMenuText": {"recognition": "OCR", "roi": roi}}
+            )
+            results = detail.all_results if detail else []
+            labels = [r for r in results if not r.text.strip().isdigit()]
+            costs = [r for r in results if r.text.strip().isdigit()]
+            for label in labels:
+                x, y, w, h = label.box
+                cost = next((c.text for c in costs if abs((c.box[0] + c.box[2] / 2) - (x + w / 2)) < 120 and c.box[1] > y), "?")
+                options.append({"id": f"option_{len(options) + 1}", "label": f"自定义选项：{label.text}（{cost} P）", "box": [x - 15, y - 15, w + 30, h + 60]})
+        return options
 
 
 @AgentServer.custom_recognition("ProduceRewardExternalReady")

@@ -247,6 +247,50 @@
       "Node.Recognition.Succeeded": "[color:LimeGreen]事件: 特别指导[/color]"
     },
     "next": [
+      "ProduceCustomizeExternal",
+      "ProduceGuideExit"
+    ]
+  },
+  "ProduceGuideScreen": {
+    "recognition": {
+      "type": "TemplateMatch",
+      "param": {
+        "roi": [
+          0,
+          0,
+          260,
+          170
+        ],
+        "template": "produce/guide_header.png",
+        "threshold": 0.85
+      }
+    },
+    "action": {
+      "type": "DoNothing",
+      "param": {}
+    },
+    "focus": {
+      "Node.Recognition.Succeeded": "[color:LimeGreen]事件: 特别指导[/color]"
+    },
+    "next": [
+      "ProduceCustomizeExternal",
+      "ProduceGuideExit"
+    ]
+  },
+  "ProduceCustomizeExternal": {
+    "recognition": {
+      "type": "Custom",
+      "param": {
+        "custom_recognition": "ProduceCustomizeExternalReady"
+      }
+    },
+    "action": {
+      "type": "Custom",
+      "param": {
+        "custom_action": "ProduceCustomizeExternal"
+      }
+    },
+    "next": [
       "ProduceGuideExit"
     ]
   },

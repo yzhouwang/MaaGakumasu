@@ -112,7 +112,10 @@ class ExternalDecider:
                     logger.warning(f"外部决策答复无效（{response.get('choice')}），使用原有逻辑")
                     return None
                 logger.success(f"外部决策：{kind} 选择 {chosen['id']}（{chosen.get('label', '')}）{response.get('reason', '')[:80]}")
-                return {**chosen, "reason": response.get("reason", "")}
+                result = {**chosen, "reason": response.get("reason", "")}
+                if isinstance(response.get("x"), int) and isinstance(response.get("y"), int):
+                    result["point"] = [response["x"], response["y"]]
+                return result
             time.sleep(POLL_INTERVAL)
         logger.warning(f"外部决策超时（{self.timeout:.0f} 秒），使用原有逻辑")
         return None
