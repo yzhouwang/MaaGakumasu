@@ -86,4 +86,10 @@ except ImportError:
     handler.setFormatter(ShortLevelFormatter("%(level_short)s:%(message)s"))
     logging.root.addHandler(handler)
     logging.root.setLevel(logging.INFO)
-    logger = logging
+
+    # loguru 不可用时补充 SUCCESS 级别：业务代码普遍调用 logger.success，标准 logging 模块没有该方法
+    SUCCESS_LEVEL = 25
+    logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
+    ShortLevelFormatter.level_map["SUCCESS"] = "success"
+    logger = logging.getLogger("MaaGakumasu")
+    logger.success = lambda message, *args, **kwargs: logger.log(SUCCESS_LEVEL, message, *args, **kwargs)
