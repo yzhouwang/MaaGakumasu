@@ -1,7 +1,8 @@
 """战斗画面识别的离线评估：用人工读数（GHL 实况夹具）核对 tools/decider/ghl_frame.py 的每个字段。
 
 人工读数来自 GHL（gakumas-headless-lab）的 fixtures/maa-live/<run>.json：每个决策的 f 为该截图的 LiveFrame，
-mailbox 为采集信箱相对采集仓库根目录的路径。按信箱 decisions.jsonl 中请求的候选框识别手牌，与实况决策者所见一致。
+mailbox 为采集信箱相对采集仓库根目录的路径。手牌按信箱 decisions.jsonl 中请求的卡牌框识别：可出的牌在候选中，
+不可出的牌在 state.unplayable_card_boxes 中，两者合起来才是整手牌。
 
 用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
     python research/produce/eval_battle_frames.py --fixture <ghl>/fixtures/maa-live/sonnet-2026-10-21.json \\
@@ -99,6 +100,10 @@ def main():
                 {"candidate_id": item["id"], "box": item["box"], "label": item.get("detector_label"), "in_hand_region": True}
                 for item in request["candidates"]
                 if item["id"].startswith("card_")
+            ]
+            candidates += [
+                {"candidate_id": f"unplayable_{index}", "box": box, "label": "useless", "in_hand_region": True}
+                for index, box in enumerate((request.get("state") or {}).get("unplayable_card_boxes") or [])
             ]
             result = vision.analyze(read_image(mailbox / request["frame"]), catalog, candidates)
             read = ghl_frame(result)
