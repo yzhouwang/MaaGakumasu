@@ -211,7 +211,7 @@ class BattleStateReader:
             problems = []
             entries = [
                 (kind, entry)
-                for group, kind in (("buffs", "buff"), ("stances", "stance"), ("stance_previews", "stance_preview"))
+                for group, kind in (("buffs", "buff"), ("stances", "stance"), ("stance_previews", "stance_preview"), ("drinks", "drink"))
                 for entry in data.get(group, [])
             ]
             for kind, definition in entries:
@@ -443,6 +443,22 @@ class BattleStateReader:
                 unknown.append({"box": box, "status": "candidate_region", "reason": "no_registered_template", "value": None})
         return buffs, unknown
 
+    def _drinks(self, array, errors):
+        """左下角饮料槽中已登记图标的饮料，按从左到右；两个饮料得分接近时记为未知。没有登记模板的饮料不在结果中。"""
+        drinks = []
+        for group in sorted(self._matches(array, "drink", errors), key=lambda group: group[0]["box"][0]):
+            best = group[0]
+            entry = best["definition"]
+            if best["score"] < entry["threshold"]:
+                continue
+            evidence = self._icon_evidence(best, group)
+            rival = next((hit for hit in group if hit["definition"]["drink_id"] != entry["drink_id"]), None)
+            if rival and best["score"] - rival["score"] < self.ambiguity_margin:
+                drinks.append({"box": best["box"], "drink_id": None, "name": None, "status": "unknown", "reason": "ambiguous_templates", "icon_evidence": evidence})
+                continue
+            drinks.append({"box": best["box"], "drink_id": entry["drink_id"], "name": entry["name"], "status": "observed", "icon_evidence": evidence})
+        return drinks
+
     def _single_icon(self, array, kind, errors):
         groups = self._matches(array, kind, errors)
         qualified = [group for group in groups if group[0]["score"] >= group[0]["definition"]["threshold"]]
@@ -586,6 +602,7 @@ class BattleStateReader:
             "fields": fields,
             "buffs": [],
             "unknown_buffs": [],
+            "drinks": [],
             "buffs_complete": False,
             "turn_number": None,
             "card_uses_remaining": None,
@@ -607,6 +624,7 @@ class BattleStateReader:
         else:
             state["fields"]["score"] = unknown_field("unsupported_or_ambiguous_score_layout")
         state["buffs"], state["unknown_buffs"] = self._buffs(array, rgb, errors, layout)
+        state["drinks"] = self._drinks(array, errors)
         state["anomaly"] = self._anomaly(array, errors, state["buffs"])
         state["stance"] = state["anomaly"]["stance"]["value"]
         # 侧边列表可能滚动或省略，未出现的状态不自动补零。

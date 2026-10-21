@@ -8,9 +8,12 @@ GHL 的影子回放与决策模型按 LiveFrame 读取战斗状态（src/bridge/
 - gib：好印象增加量 [百分比, 回合]；gie：好印象效果百分比；sb：得分提升 [百分比, 回合或 None]；
 - hand：手牌名（从左到右，「+」为强化，读不出为「?」）。战斗中再次强化的「+」牌显示「++」，GHL 没有这种牌，记为「+」。
 
+另附 drinks：饮料槽中的饮料名（从左到右；没有登记图标的饮料为「?」），GHL 用来对应饮料候选。
+
 读不到的字段为 None，并列入 unknown，不按常见值补齐。仅供本地开发调试的外部决策者与离线评估使用。
 """
 
+from produce.state import overlap_ratio
 from produce.console import card_name
 
 # 与 GHL 引擎字段同名的 Buff，数值即层数或回合。
@@ -36,10 +39,23 @@ def hand_names(cards):
     return names
 
 
-def ghl_frame(result):
+def drink_names(state, drink_boxes=None):
+    """饮料槽从左到右的饮料名；给出信箱候选的饮料框时逐框对应，框内没有登记图标的饮料记为「?」。"""
+    drinks = state.get("drinks") or []
+    if not drink_boxes:
+        return [drink["name"] or "?" for drink in drinks]
+    names = []
+    for box in sorted(drink_boxes, key=lambda box: box[0]):
+        hit = next((drink for drink in drinks if overlap_ratio(drink["box"], box) >= 0.45), None)
+        names.append((hit or {}).get("name") or "?")
+    return names
+
+
+def ghl_frame(result, drink_boxes=None):
     """
     Args:
         result: OfflineVision.analyze 的结果（cards 与 battle_state）。
+        drink_boxes: 信箱请求中饮料候选的框，可选；给出时没有登记图标的饮料也占位为「?」。
 
     Returns:
         dict: LiveFrame 字段，外加 layout（lesson / exam / None）与 unknown（读不到的字段名）。
@@ -71,5 +87,6 @@ def ghl_frame(result):
     if score_buffs:
         frame["sb"] = score_buffs
     frame["hand"] = hand_names(result.get("cards") or [])
+    frame["drinks"] = drink_names(state, drink_boxes)
     frame["unknown"] = sorted(key for key, value in frame.items() if value is None)
     return frame

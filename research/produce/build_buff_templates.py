@@ -1,4 +1,7 @@
-"""从培育实验 HUD 原图裁剪像素，遮罩变化区域和背景，生成 MaaFramework 模板。"""
+"""从培育实验 HUD 原图裁剪像素，遮罩变化区域和背景，生成 MaaFramework 模板。
+
+Buff 图标为菱形，遮罩按到中心的曼哈顿距离；饮料图标为圆形（mask.shape 为 circle），按欧氏距离。
+"""
 
 import json
 import hashlib
@@ -12,7 +15,7 @@ def build(manifest_path, capture_root, image_root, preview=None):
     manifest_path, capture_root, image_root = (Path(path).resolve() for path in (manifest_path, capture_root, image_root))
     registry = json.loads(manifest_path.read_text(encoding="utf-8"))
     crops = []
-    for entry in [*registry["buffs"], *registry.get("stances", []), *registry.get("stance_previews", [])]:
+    for entry in [*registry.get("buffs", []), *registry.get("stances", []), *registry.get("stance_previews", []), *registry.get("drinks", [])]:
         source = entry["source"]
         frame = (capture_root / source["run_id"] / "frames" / (source["frame_sha256"] + ".png")).resolve()
         if not frame.is_relative_to(capture_root):
@@ -30,10 +33,12 @@ def build(manifest_path, capture_root, image_root, preview=None):
         template = original.copy()
         mask = entry["mask"]
         cx, cy = mask["center"]
+        circle = mask.get("shape") == "circle"
         pixels = template.load()
         for y in range(height):
             for x in range(width):
-                if abs(x - cx) + abs(y - cy) > mask["radius"]:
+                distance = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 if circle else abs(x - cx) + abs(y - cy)
+                if distance > mask["radius"]:
                     pixels[x, y] = (0, 255, 0)
         draw = ImageDraw.Draw(template)
         for x, y, w, h in mask.get("rectangles", []):

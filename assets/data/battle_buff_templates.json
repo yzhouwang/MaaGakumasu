@@ -852,5 +852,250 @@
 			},
 			"template_sha256": "4c85b8fb6bbc65cf2ca48ade3e764821002fb3cab307cb7e8e666ffdc006f2ef"
 		}
+	],
+	"drinks": [
+		{
+			"id": "drink_0018",
+			"drink_id": 18,
+			"name": "初星ホエイプロテイン",
+			"template": "produce/drinks/drink_0018.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "3587b61fda5de32529d95298e88935b45ddaacce7d0228cbceddbacaad09c7fd",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 0; the hand-read held-drink list of the same battle names 初星ホエイプロテイン (drink id 18) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "f33451ee538b8bd46fe008b84cc543cc99c2edb94d456ba0cbf95e13b3f12909"
+		},
+		{
+			"id": "drink_0023",
+			"drink_id": 23,
+			"name": "厳選初星ティー",
+			"template": "produce/drinks/drink_0023.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "3587b61fda5de32529d95298e88935b45ddaacce7d0228cbceddbacaad09c7fd",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 1; the hand-read held-drink list of the same battle names 厳選初星ティー (drink id 23) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "ba6f08a5fa53e8a732fe2f10dfa64631d61a3a9bebd4eb2038fb826d3eb8c5b3"
+		},
+		{
+			"id": "drink_0005",
+			"drink_id": 5,
+			"name": "ルイボスティー",
+			"template": "produce/drinks/drink_0005.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "3587b61fda5de32529d95298e88935b45ddaacce7d0228cbceddbacaad09c7fd",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 2; the hand-read held-drink list of the same battle names ルイボスティー (drink id 5) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "1da911c0077be00aa497ea475afd29c9157d6d190c7222633d434b1298312107"
+		},
+		{
+			"id": "drink_0019",
+			"drink_id": 19,
+			"name": "初星スペシャル青汁",
+			"template": "produce/drinks/drink_0019.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "387014dd3026c63c720bed068592e922907e99f0febfeef5bc59f39bf7f73321",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 0; the hand-read held-drink list of the same battle names 初星スペシャル青汁 (drink id 19) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "e9fc5fc37dc45bfee702f88eb0425252ae10db8b0056f35ee3a7f6b5878cc761"
+		},
+		{
+			"id": "drink_0006",
+			"drink_id": 6,
+			"name": "ホットコーヒー",
+			"template": "produce/drinks/drink_0006.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "387014dd3026c63c720bed068592e922907e99f0febfeef5bc59f39bf7f73321",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 1; the hand-read held-drink list of the same battle names ホットコーヒー (drink id 6) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "41b492dcf0edc719d80bb6233b298230fb769c76c50b13d08ce9c1688cf72667"
+		},
+		{
+			"id": "drink_0010",
+			"drink_id": 10,
+			"name": "リカバリドリンク",
+			"template": "produce/drinks/drink_0010.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "387014dd3026c63c720bed068592e922907e99f0febfeef5bc59f39bf7f73321",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 2; the hand-read held-drink list of the same battle names リカバリドリンク (drink id 10) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "3129a71678dceda89332e7465c3b3881f667c8a7c7a5f0fd08ca5d189ab53b34"
+		},
+		{
+			"id": "drink_0024",
+			"drink_id": 24,
+			"name": "厳選初星ブレンド",
+			"template": "produce/drinks/drink_0024.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-20-opus",
+				"frame_sha256": "9d7735394bbda9888c71dd1af372ee63eb8216c662fe314b615df5479f921acb",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 0; the hand-read held-drink list of the same battle names 厳選初星ブレンド (drink id 24) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "ddc55e183ff8e77e62cf7bc2010c928e92df8ce17a149e1c4e41cc2882758687"
+		},
+		{
+			"id": "drink_0009",
+			"drink_id": 9,
+			"name": "ミックススムージー",
+			"template": "produce/drinks/drink_0009.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-20-opus",
+				"frame_sha256": "9d7735394bbda9888c71dd1af372ee63eb8216c662fe314b615df5479f921acb",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 1; the hand-read held-drink list of the same battle names ミックススムージー (drink id 9) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "22187e50c3bcc906abce75b6c00d31d04c1f210568f7d708d3b2dd80d957870e"
+		},
+		{
+			"id": "drink_0025",
+			"drink_id": 25,
+			"name": "特製ハツボシエキス",
+			"template": "produce/drinks/drink_0025.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-20-opus",
+				"frame_sha256": "9d7735394bbda9888c71dd1af372ee63eb8216c662fe314b615df5479f921acb",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at the battle's drink slot 2; the hand-read held-drink list of the same battle names 特製ハツボシエキス (drink id 25) in this slot.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "4f66dcb2d19bd02fb50d46cb690fd3c11df423e6d7acd84f76cb078cc2138a63"
+		}
 	]
 }

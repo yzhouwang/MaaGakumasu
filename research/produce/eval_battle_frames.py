@@ -39,6 +39,20 @@ def displayed_score_buffs(buffs):
     return [[sum(percent for percent, _ in buffs), min(turns) if turns else None]]
 
 
+def held_drinks(fixture, decisions, responses):
+    """每帧应持有的饮料：战斗开始时的持有表，减去本场战斗此前已选用的饮料槽。"""
+    held, current = {}, None
+    for decision in decisions:
+        if decision.get("battle") != current:
+            current = decision.get("battle")
+            drinks = list((fixture["battles"].get(current) or {}).get("drinks") or [])
+        held[decision["id"]] = list(drinks)
+        choice = responses.get(decision["id"]) or ""
+        if choice.startswith("drink_") and int(choice[6:]) < len(drinks):
+            drinks.pop(int(choice[6:]))
+    return held
+
+
 def label_fields(label, read, layout):
     """逐字段比较人工读数与识别结果，返回 {字段: (人工, 识别)}；Buff 未显示按 0 计。"""
     pairs = {
@@ -89,10 +103,12 @@ def main():
     for fixture_path in args.fixture:
         fixture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
         mailbox = args.capture_root / fixture["mailbox"]
-        requests = {}
+        requests, responses = {}, {}
         for line in (mailbox / "decisions.jsonl").read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
             requests[record["request"]["id"]] = record["request"]
+            responses[record["request"]["id"]] = (record.get("response") or {}).get("choice")
+        held = held_drinks(fixture, [decision for decision in fixture["decisions"] if decision.get("battle")], responses)
         labelled = [decision for decision in fixture["decisions"] if decision.get("f") and decision["id"] in requests]
         for decision in labelled[: args.limit or None]:
             request = requests[decision["id"]]
@@ -106,12 +122,16 @@ def main():
                 for index, box in enumerate((request.get("state") or {}).get("unplayable_card_boxes") or [])
             ]
             result = vision.analyze(read_image(mailbox / request["frame"]), catalog, candidates)
-            read = ghl_frame(result)
+            drink_boxes = [item["box"] for item in request["candidates"] if item["id"].startswith("drink_")]
+            read = ghl_frame(result, drink_boxes)
             kind = fixture["battles"][decision["battle"]]["kind"]
             layout = "lesson" if kind == "lesson" else "exam"
             frames += 1
             wrong = {}
-            for field, (want, got) in label_fields(decision["f"], read, layout).items():
+            pairs = label_fields(decision["f"], read, layout)
+            if decision["id"] in held:
+                pairs["drinks"] = (held[decision["id"]], read["drinks"])
+            for field, (want, got) in pairs.items():
                 total[layout][field] += 1
                 if want == got:
                     right[layout][field] += 1

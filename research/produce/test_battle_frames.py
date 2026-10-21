@@ -222,6 +222,20 @@ class GhlFrameTest(unittest.TestCase):
         self.assertEqual(frame["hand"], ["ファンサの基本", "?"])
         self.assertEqual(frame["unknown"], [])
 
+    def test_drinks_follow_the_candidate_slots(self):
+        state = {
+            "hud_present": False,
+            "fields": {},
+            "drinks": [
+                {"box": [26, 1165, 70, 70], "name": "初星ホエイプロテイン"},
+                {"box": [197, 1165, 70, 70], "name": None},
+            ],
+        }
+        self.assertEqual(ghl_frame({"battle_state": state, "cards": []})["drinks"], ["初星ホエイプロテイン", "?"])
+        boxes = [[197, 1165, 70, 70], [112, 1165, 70, 70], [26, 1165, 70, 70]]
+        # 中间的饮料没有登记图标：按候选框占位为「?」。
+        self.assertEqual(ghl_frame({"battle_state": state, "cards": []}, boxes)["drinks"], ["初星ホエイプロテイン", "?", "?"])
+
     def test_missing_fields_are_listed(self):
         frame = ghl_frame({"battle_state": {"hud_present": False, "fields": {}}, "cards": []})
         self.assertIsNone(frame["layout"])
