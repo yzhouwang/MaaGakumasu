@@ -467,6 +467,88 @@
 			},
 			"template_sha256": "5b917b82d932cbfa957c234e0fe0d2a2888ae52203714d0458f31fef32e735d2",
 			"value_family": "concentration"
+		},
+		{
+			"id": "good_impression_effect",
+			"key": "goodImpressionEffectPercent",
+			"name": "好印象效果",
+			"unit": "percent",
+			"template": "produce/buffs/good_impression_effect.png",
+			"threshold": 0.94,
+			"method": 10001,
+			"roi": [0, 232, 84, 538],
+			"green_mask": true,
+			"reading": {
+				"format": "percent",
+				"roi_offset": [36, 29, 125, 42],
+				"second_roi_offset": [42, 31, 119, 40]
+			},
+			"duration_reading": {
+				"format": "turns",
+				"roi_offset": [36, -9, 125, 38]
+			},
+			"source": {
+				"run_id": "decider-mailbox-2026-10-20-opus",
+				"frame_sha256": "63ed5e5572dea3e19224cba94e5b9c198ca6b4ce31ee85f67b19c458b3751d87",
+				"box": [15, 604, 56, 56],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Thumb glyph with a double chevron, shown with a percentage only (50%) in the 初 LEGEND final exam; hand-read frames of the same battle list 好印象効果 50%. Distinct from 好印象増加量 (thumb with a percent sign, shown with a duration). The right strip, where the value digits overlap, is masked.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"center": [28, 28],
+				"radius": 30,
+				"rectangles": [[42, 0, 14, 56]]
+			},
+			"template_sha256": "299b611e1d3053690bffde00b9ed8f0b58351869cc4ec2b373ce583ba470b0ae",
+			"discriminator": {
+				"group": "good_impression_badge",
+				"region": [26, 4, 16, 20]
+			}
+		},
+		{
+			"id": "good_impression_gain",
+			"key": "goodImpressionGainPercent",
+			"name": "好印象增加量",
+			"unit": "percent",
+			"template": "produce/buffs/good_impression_gain.png",
+			"threshold": 0.94,
+			"method": 10001,
+			"roi": [0, 232, 84, 538],
+			"green_mask": true,
+			"reading": {
+				"format": "percent",
+				"roi_offset": [36, 29, 125, 42],
+				"second_roi_offset": [42, 31, 119, 40]
+			},
+			"duration_reading": {
+				"format": "turns",
+				"roi_offset": [36, -9, 125, 38]
+			},
+			"source": {
+				"run_id": "decider-mailbox-2026-10-20-opus",
+				"frame_sha256": "63ed5e5572dea3e19224cba94e5b9c198ca6b4ce31ee85f67b19c458b3751d87",
+				"box": [15, 420, 56, 56],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Thumb glyph with a percent sign, shown with a duration and a percentage (2ターン, 50%) in the 初 LEGEND final exam; hand-read frames of the same battle list 好印象増加量 50% for 2 turns. Distinct from 好印象効果 (thumb with a double chevron). The right strip, where the duration and value digits overlap, is masked.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"center": [28, 28],
+				"radius": 30,
+				"rectangles": [[42, 0, 14, 56]]
+			},
+			"template_sha256": "6290247093a7f9400bbb23f0cdcbea1cd9585ac2c05af3e4460c37e9b51b48de",
+			"discriminator": {
+				"group": "good_impression_badge",
+				"region": [26, 4, 16, 20]
+			}
 		}
 	],
 	"stances": [

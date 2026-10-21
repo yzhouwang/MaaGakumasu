@@ -110,6 +110,18 @@ def added_turns_field(raw, roi):
     return {"value": value, "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw}
 
 
+def masked_correlation(crop, template):
+    """只在模板非遮罩像素（遮罩为纯绿 0,255,0）上计算的相关系数。"""
+    keep = ~((template[..., 1] > 250) & (template[..., 0] < 5) & (template[..., 2] < 5))
+    if crop.shape != template.shape or keep.sum() < 8:
+        return 0.0
+    left, right = crop[keep].astype(float), template[keep].astype(float)
+    left -= left.mean()
+    right -= right.mean()
+    denominator = float(np.sqrt((left * left).sum() * (right * right).sum()))
+    return float((left * right).sum()) / denominator if denominator else 0.0
+
+
 def buff_number(raw, roi, format_name):
     if format_name in ("integer", "percent"):
         return number_field(raw, roi, maximum=9999, percent=format_name == "percent")
@@ -189,6 +201,8 @@ class BattleStateReader:
         self.template_error = None
         self.templates = []
         self.ambiguity_margin = 0.025
+        self.image_root = Path(image_root).resolve() if image_root else None
+        self._template_pixels = {}
         try:
             content = registry.read_bytes()
             data = json.loads(content)
@@ -264,6 +278,40 @@ class BattleStateReader:
                 group.append(hit)
         return sorted(groups, key=lambda g: g[0]["box"][1])
 
+    def _discriminated(self, array, group):
+        """
+        同形图标按标记区域区分：组内登记了同一 discriminator 组的模板整体得分几乎相同（如好印象效果与
+        好印象增加量只差右上角的标记），改比标记区域内与各模板像素的相关系数。差距不足 0.05 时原样返回，
+        由后续歧义判断记为未知。
+
+        Returns:
+            tuple: (排序后的命中组, 区分证据或 None)
+        """
+        rule = group[0]["definition"].get("discriminator")
+        if not rule or not self.image_root:
+            return group, None
+        kin = [hit for hit in group if (hit["definition"].get("discriminator") or {}).get("group") == rule["group"]]
+        if len(kin) < 2:
+            return group, None
+        from utils.image_io import read_image
+
+        x, y, width, height = rule["region"]
+        scores = []
+        for hit in kin:
+            entry = hit["definition"]
+            if entry["id"] not in self._template_pixels:
+                self._template_pixels[entry["id"]] = read_image(self.image_root / entry["template"])
+            left, top = hit["box"][0] + x, hit["box"][1] + y
+            crop = array[top : top + height, left : left + width]
+            template = self._template_pixels[entry["id"]][y : y + height, x : x + width]
+            scores.append((masked_correlation(crop, template), hit))
+        scores.sort(key=lambda item: -item[0])
+        evidence = {"region": rule["region"], "correlations": [{"id": hit["definition"]["id"], "value": round(score, 4)} for score, hit in scores]}
+        if scores[0][0] - scores[1][0] < 0.05:
+            return group, evidence
+        winner = scores[0][1]
+        return [winner, *[hit for hit in group if hit is not winner and hit not in kin]], evidence
+
     @staticmethod
     def _icon_evidence(best, group):
         entry = best["definition"]
@@ -305,12 +353,15 @@ class BattleStateReader:
                         if hit["definition"].get("value_family") != family or hit["definition"]["reading"]["format"] == value_format
                     ]
                     unit_evidence = {"family": family, "format": value_format, "value_views": readings}
+            group, discrimination = self._discriminated(array, group)
             best = group[0]
             entry, box = best["definition"], best["box"]
             if best["score"] < entry["threshold"]:
                 continue
             rival = next((hit for hit in group if hit["definition"]["key"] != entry["key"]), None)
             evidence = self._icon_evidence(best, original_group)
+            if discrimination:
+                evidence["discrimination"] = discrimination
             if unit_evidence:
                 evidence["value_format_disambiguation"] = unit_evidence
             margin = (

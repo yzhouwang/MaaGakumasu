@@ -1,4 +1,4 @@
-"""战斗画面识别回归：课程 HUD、考试追加回合、体力数字筛选、控制台 HUD 文案与 GHL 实况帧整理。
+"""战斗画面识别回归：课程 HUD、考试追加回合、体力数字筛选、同形 Buff 图标区分、控制台 HUD 文案与 GHL 实况帧整理。
 
 使用替身 OCR（按识别区域返回预设文字），不读取真实截图、不加载模板；需要安装 maafw（读取器模块的导入链）。
 """
@@ -12,7 +12,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 from ghl_frame import ghl_frame
-from produce.state import EXAM_HUD, LESSON_HUD, BattleStateReader, turn_fields, added_turns_field
+from produce.state import EXAM_HUD, LESSON_HUD, BattleStateReader, turn_fields, added_turns_field, masked_correlation
 from produce.console import state_lines
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -85,6 +85,58 @@ class LessonHudTest(unittest.TestCase):
     def test_exam_screen_is_not_a_lesson(self):
         screen = {tuple(LESSON_HUD["label"]): [token("残りターン", [14, 10, 110, 24])]}
         self.assertNotEqual(reader(screen).read(IMAGE)["layout"], "lesson")
+
+
+class BadgeDiscriminationTest(unittest.TestCase):
+    """好印象效果与好印象增加量整体得分几乎相同，只按右上角标记区域区分。"""
+
+    @staticmethod
+    def badge(mark):
+        icon = np.full((56, 56, 3), 200, dtype=np.uint8)
+        icon[:, 42:] = (0, 255, 0)  # 遮罩
+        icon[4:24, 26:42] = 120
+        if mark == "chevron":
+            icon[6:10, 28:40] = 255
+            icon[14:18, 28:40] = 255
+        else:
+            icon[6:22, 32:36] = 255
+        return icon
+
+    def setUp(self):
+        self.reader = BattleStateReader(Path("missing_registry.json"), lambda array, roi: [], image_root=Path("."))
+        self.reader._template_pixels = {"effect": self.badge("chevron"), "gain": self.badge("percent")}
+        rule = {"group": "good_impression_badge", "region": [26, 4, 16, 20]}
+        self.effect = {"definition": {"id": "effect", "key": "goodImpressionEffectPercent", "discriminator": rule}, "box": [16, 600, 56, 56], "score": 0.99}
+        self.gain = {"definition": {"id": "gain", "key": "goodImpressionGainPercent", "discriminator": rule}, "box": [16, 600, 56, 56], "score": 0.985}
+        self.plain = {"definition": {"id": "plain", "key": "goodImpressionTurns"}, "box": [16, 600, 56, 56], "score": 0.92}
+
+    def frame_with(self, mark):
+        frame = np.zeros((1280, 720, 3), dtype=np.uint8)
+        icon = self.badge(mark)
+        icon[:, 42:] = 30  # 画面上该处是数值文字
+        frame[600:656, 16:72] = icon
+        return frame
+
+    def test_correlation_ignores_mask(self):
+        icon = self.badge("chevron")
+        self.assertAlmostEqual(masked_correlation(icon.copy(), icon), 1.0)
+        noisy = icon.copy()
+        noisy[:, 42:] = 7
+        self.assertAlmostEqual(masked_correlation(noisy, icon), 1.0)
+
+    def test_mark_decides_between_kin(self):
+        group, evidence = self.reader._discriminated(self.frame_with("percent"), [self.effect, self.gain, self.plain])
+        self.assertEqual([hit["definition"]["id"] for hit in group], ["gain", "plain"])
+        self.assertEqual(evidence["correlations"][0]["id"], "gain")
+        group, _ = self.reader._discriminated(self.frame_with("chevron"), [self.gain, self.effect])
+        self.assertEqual(group[0]["definition"]["id"], "effect")
+
+    def test_unclear_mark_stays_ambiguous(self):
+        frame = self.frame_with("chevron")
+        frame[604:624, 42:58] = 120  # 标记区域被遮挡
+        group, evidence = self.reader._discriminated(frame, [self.effect, self.gain])
+        self.assertEqual(len(group), 2)
+        self.assertIsNotNone(evidence)
 
 
 class GhlFrameTest(unittest.TestCase):
