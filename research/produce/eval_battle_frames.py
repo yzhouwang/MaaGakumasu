@@ -9,6 +9,7 @@ mailbox 为采集信箱相对采集仓库根目录的路径。手牌按信箱 de
         --capture-root <采集仓库根目录> --output debug/research/produce/frame_reader
 
 输出 report.json（按字段与画面类型统计）与 mismatches.jsonl（逐帧不一致），控制台打印汇总表。
+--export 另写出每帧识别得到的实况帧（{"id", "f"}，JSONL），GHL 的影子回放可用它代替人工读数。
 """
 
 import sys
@@ -80,6 +81,7 @@ def main():
     parser.add_argument("--capture-root", type=Path, default=ROOT, help="夹具中 mailbox 路径的根目录")
     parser.add_argument("--output", type=Path, default=ROOT / "debug" / "research" / "produce" / "frame_reader")
     parser.add_argument("--limit", type=int, default=0, help="每个夹具最多评估的帧数，0 为全部")
+    parser.add_argument("--export", type=Path, help="写出识别得到的实况帧（JSONL），供 GHL 影子回放代替人工读数")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -98,6 +100,7 @@ def main():
 
     right, total = defaultdict(Counter), defaultdict(Counter)
     mismatches = []
+    exported = []
     started = time.time()
     frames = 0
     for fixture_path in args.fixture:
@@ -124,6 +127,7 @@ def main():
             result = vision.analyze(read_image(mailbox / request["frame"]), catalog, candidates)
             drink_boxes = [item["box"] for item in request["candidates"] if item["id"].startswith("drink_")]
             read = ghl_frame(result, drink_boxes)
+            exported.append({"run": fixture["run"], "id": decision["id"], "f": read})
             kind = fixture["battles"][decision["battle"]]["kind"]
             layout = "lesson" if kind == "lesson" else "exam"
             frames += 1
@@ -152,6 +156,9 @@ def main():
     with (args.output / "mismatches.jsonl").open("w", encoding="utf-8") as stream:
         for item in mismatches:
             stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+    if args.export:
+        args.export.parent.mkdir(parents=True, exist_ok=True)
+        args.export.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in exported), encoding="utf-8")
     print(f"{frames} 帧，{report['seconds']} 秒")
     for layout, fields in report["accuracy"].items():
         print(f"[{layout}] " + "  ".join(f"{field} {ok}/{n}" for field, (ok, n) in fields.items()))
