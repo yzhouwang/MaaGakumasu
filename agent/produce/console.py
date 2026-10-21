@@ -175,6 +175,25 @@ def catalog_lines(identity):
     return result
 
 
+def turns_text(fields):
+    """剩余回合；追加回合写作「5+1」，与画面一致。"""
+    turns = (fields.get("turns_remaining") or {}).get("value")
+    added = (fields.get("turns_added") or {}).get("value")
+    return ("?" if turns is None else str(turns)) + (f"+{added}" if added else "")
+
+
+def lesson_goal_text(fields):
+    """课程圆环与右上角计数：CLEAR 前为距 CLEAR，CLEAR 后为距 PERFECT 与传说加成。"""
+
+    def value(key):
+        number = (fields.get(key) or {}).get("value")
+        return "?" if number is None else number
+
+    if (fields.get("lesson_to_perfect") or {}).get("value") is not None or (fields.get("lesson_bonus") or {}).get("value") is not None:
+        return f"已 CLEAR｜距 PERFECT {value('lesson_to_perfect')}｜传说加成 {value('lesson_bonus')}"
+    return f"距 CLEAR {value('lesson_to_clear')}"
+
+
 def state_lines(state):
     if not state or not state.get("hud_present"):
         return ["状态：当前画面未确认出牌 HUD"]
@@ -183,8 +202,11 @@ def state_lines(state):
     def value(key):
         return fields[key]["value"] if fields[key]["value"] is not None else "?"
 
-    lines = [f"状态：剩 {value('turns_remaining')} 回合｜分 {value('score')}｜体 {value('stamina')}｜元 {value('genki')}"]
-    lines.append(f"属性：{value('attribute')} {value('attribute_multiplier_percent')}%")
+    if state.get("layout") == "lesson":
+        lines = [f"状态：剩 {turns_text(fields)} 回合｜体 {value('stamina')}｜元 {value('genki')}", "课程：" + lesson_goal_text(fields)]
+    else:
+        lines = [f"状态：剩 {turns_text(fields)} 回合｜分 {value('score')}｜体 {value('stamina')}｜元 {value('genki')}"]
+        lines.append(f"属性：{value('attribute')} {value('attribute_multiplier_percent')}%")
     anomaly = state.get("anomaly", {})
     if anomaly.get("held_cards_count", {}).get("value") is not None:
         capacity = anomaly["held_cards_capacity"]["value"]
@@ -239,6 +261,10 @@ def after_console(event, before, result):
         return f"操作后 #{event['seq']}：当前画面未确认出牌 HUD", changes
     labels = {
         "turns_remaining": "剩余回合",
+        "turns_added": "追加回合",
+        "lesson_to_clear": "距 CLEAR",
+        "lesson_to_perfect": "距 PERFECT",
+        "lesson_bonus": "传说加成",
         "score": "分数",
         "stamina": "体力",
         "genki": "元气",
@@ -294,11 +320,14 @@ def compact_state_lines(state):
             return "?"
         return f"{number:,}" if key == "score" and isinstance(number, (int, float)) else str(number)
 
-    main = [
-        f"剩余 {value('turns_remaining')} 回合｜分数 {value('score')}",
-        f"体力 {value('stamina')}｜元气 {value('genki')}",
-        f"属性 {value('attribute')}｜倍率 {value('attribute_multiplier_percent')}%",
-    ]
+    if state.get("layout") == "lesson":
+        main = [f"剩余 {turns_text(fields)} 回合｜{lesson_goal_text(fields)}", f"体力 {value('stamina')}｜元气 {value('genki')}"]
+    else:
+        main = [
+            f"剩余 {turns_text(fields)} 回合｜分数 {value('score')}",
+            f"体力 {value('stamina')}｜元气 {value('genki')}",
+            f"属性 {value('attribute')}｜倍率 {value('attribute_multiplier_percent')}%",
+        ]
     extra = [line for line in lines[2:] if not line.startswith("Buff：")]
     buffs = [part for line in lines[2:] if line.startswith("Buff：") for part in line.removeprefix("Buff：").split("｜")]
     buff_rows = ["Buff：" + "｜".join(buffs[index : index + 2]) for index in range(0, len(buffs), 2)]

@@ -8,7 +8,43 @@ from pathlib import Path
 
 import numpy as np
 
-STATE_FIELDS = ("turns_remaining", "score", "stamina", "genki", "attribute", "attribute_multiplier_percent")
+STATE_FIELDS = (
+    "turns_remaining",
+    "turns_added",
+    "score",
+    "stamina",
+    "genki",
+    "attribute",
+    "attribute_multiplier_percent",
+    "lesson_to_clear",
+    "lesson_to_perfect",
+    "lesson_bonus",
+)
+# 考试 HUD：剩余回合环、追加回合的「+N」胶囊、体力与元气。体力区域放宽并按数字中心筛选，
+# 过窄的区域会把体力心形图标的一半与数字连读（如 7 读成 27）。
+EXAM_HUD = {
+    "turns": ([20, 55, 80, 70], [32, 69, 60, 46]),
+    "added": [95, 115, 85, 45],
+    "stamina": [530, 195, 130, 64],
+    "genki": ([643, 170, 72, 43], [648, 172, 67, 40]),
+}
+# 课程 HUD：左上「残りターン数」框（追加回合显示为「5+1」，日程结束后为「0+2」）、中央圆环
+# 「CLEARまで」或 CLEAR 后的「PERFECTまで」、CLEAR 后右上角的「レジェンドボーナス」计数；
+# 体力与元气比考试 HUD 高约 40 像素。
+LESSON_HUD = {
+    "label": [20, 28, 170, 44],
+    "turns": [70, 58, 110, 58],
+    "goal_label": [270, 88, 180, 34],
+    "goal": [280, 108, 160, 72],
+    "bonus": [500, 30, 210, 60],
+    "stamina": [530, 150, 130, 70],
+    "genki": [636, 126, 64, 46],
+}
+# 体力数字位于心形图标右侧，按识别框中心横坐标筛选，排除图标与右侧 P 道具计数。
+STAMINA_CENTER_X = (560, 640)
+# 课程的 Buff 列比考试高约 13 像素，第一个图标会越出模板登记的区域上沿；考试 Buff 列上方是 P 道具
+# 触发预告的大图标，不放宽。
+BUFF_COLUMN = {"lesson": ([0, 210, 84, 560], 250), "exam": (None, 263)}
 ANOMALY_FIELDS = (
     "stance",
     "stance_stage",
@@ -37,6 +73,39 @@ def number_field(raw, roi, *, maximum, percent=False, minimum_confidence=0.70):
             values.append((value, item["confidence"]))
     if len({value for value, _ in values}) != 1:
         return unknown_field("missing_or_ambiguous_number", roi, raw)
+    value, confidence = max(values, key=lambda item: item[1])
+    return {"value": value, "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw}
+
+
+def centered(raw, x_range):
+    """只保留识别框中心横坐标落在 x_range 内的文字。"""
+    return [item for item in raw if x_range[0] <= item["box"][0] + item["box"][2] / 2 <= x_range[1]]
+
+
+def turn_fields(raw, roi):
+    """解析剩余回合与追加回合：「8」「5+1」「0+2」或分开识别的「5」「+1」。"""
+    tokens = [item for item in sorted(raw, key=lambda item: item["box"][0]) if item["confidence"] >= 0.70]
+    text = " ".join(unicodedata.normalize("NFKC", item["text"]).strip() for item in tokens)
+    match = re.fullmatch(r"(\d{1,2})\s*(?:\+\s*(\d{1,2}))?", text)
+    if not match:
+        return unknown_field("missing_or_ambiguous_turns", roi, raw), unknown_field("missing_or_ambiguous_turns", roi, raw)
+    confidence = min(item["confidence"] for item in tokens)
+    turns = {"value": int(match.group(1)), "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw}
+    added = {"value": int(match.group(2) or 0), "status": "observed" if match.group(2) else "not_shown", "confidence": confidence, "roi": roi, "raw_ocr": raw}
+    return turns, added
+
+
+def added_turns_field(raw, roi):
+    """考试剩余回合环下方的「+N」胶囊；未显示时为 0（not_shown）。"""
+    values = []
+    for item in raw:
+        match = re.fullmatch(r"\+\s*(\d{1,2})", unicodedata.normalize("NFKC", item["text"]).strip())
+        if match and item["confidence"] >= 0.70:
+            values.append((int(match.group(1)), item["confidence"]))
+    if len({value for value, _ in values}) > 1:
+        return unknown_field("ambiguous_added_turns", roi, raw)
+    if not values:
+        return {"value": 0, "status": "not_shown", "confidence": None, "roi": roi, "raw_ocr": raw}
     value, confidence = max(values, key=lambda item: item[1])
     return {"value": value, "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw}
 
@@ -174,14 +243,14 @@ class BattleStateReader:
         raw = self._ocr(array, roi, errors)
         return buff_number(raw, roi, spec["format"])
 
-    def _matches(self, array, kind, errors):
+    def _matches(self, array, kind, errors, roi=None):
         hits = []
         if self.match_templates:
             for entry in self.templates:
                 if entry["kind"] != kind:
                     continue
                 try:
-                    for hit in self.match_templates(array, entry):
+                    for hit in self.match_templates(array, {**entry, "roi": roi} if roi else entry):
                         if hit["score"] >= entry["threshold"] - self.ambiguity_margin:
                             hits.append({**hit, "definition": entry})
                 except Exception as exc:
@@ -209,9 +278,10 @@ class BattleStateReader:
             "candidates": [{"id": hit["definition"]["id"], "score": hit["score"]} for hit in group[:3]],
         }
 
-    def _buffs(self, array, rgb, errors):
+    def _buffs(self, array, rgb, errors, layout="exam"):
         buffs, unknown = [], []
-        for group in self._matches(array, "buff", errors):
+        roi, first_center = BUFF_COLUMN[layout]
+        for group in self._matches(array, "buff", errors, roi):
             original_group = group
             unit_evidence = None
             family = group[0]["definition"].get("value_family")
@@ -307,7 +377,7 @@ class BattleStateReader:
         # 保留未分类区域以便补充新机制素材，
         # 不认定每个采样区域都包含 Buff。
         for slot in range(8):
-            cy = round(263 + slot * 61.4)
+            cy = round(first_center + slot * 61.4)
             box = [14, cy - 30, 60, 60]
             if not any(overlap_ratio(box, b["box"]) >= 0.45 for b in [*buffs, *unknown]):
                 unknown.append({"box": box, "status": "candidate_region", "reason": "no_registered_template", "value": None})
@@ -386,20 +456,49 @@ class BattleStateReader:
         }
         return result
 
+    def _lesson_fields(self, array, errors):
+        """读取课程 HUD；画面上既没有「残りターン数」框也没有圆环标签时返回 None。"""
+        label = "".join(item["text"] for item in self._ocr(array, LESSON_HUD["label"], errors) if item["confidence"] >= 0.70)
+        goal_label = "".join(item["text"] for item in self._ocr(array, LESSON_HUD["goal_label"], errors) if item["confidence"] >= 0.70)
+        goal_label = unicodedata.normalize("NFKC", goal_label).upper()
+        stage = "perfect" if "PERFECT" in goal_label else "clear" if "CLEAR" in goal_label else None
+        if "残りターン数" not in unicodedata.normalize("NFKC", label) and stage is None:
+            return None
+        fields = {key: unknown_field() for key in STATE_FIELDS}
+        roi = LESSON_HUD["turns"]
+        fields["turns_remaining"], fields["turns_added"] = turn_fields(self._ocr(array, roi, errors), roi)
+        roi = LESSON_HUD["goal"]
+        goal = number_field(self._ocr(array, roi, errors), roi, maximum=999999)
+        if stage:
+            fields["lesson_to_perfect" if stage == "perfect" else "lesson_to_clear"] = goal
+        roi = LESSON_HUD["bonus"]
+        raw = self._ocr(array, roi, errors)
+        # CLEAR 前右上角显示本课属性的当前参数，CLEAR 后才换成「レジェンドボーナス」计数。
+        if any(re.search("レジェンド|ボーナス", unicodedata.normalize("NFKC", item["text"])) for item in raw):
+            fields["lesson_bonus"] = number_field(centered(raw, (600, 720)), roi, maximum=999999)
+        else:
+            fields["lesson_bonus"] = unknown_field("not_shown", roi, raw)
+        roi = LESSON_HUD["stamina"]
+        fields["stamina"] = number_field(centered(self._ocr(array, roi, errors), STAMINA_CENTER_X), roi, maximum=999)
+        roi = LESSON_HUD["genki"]
+        fields["genki"] = number_field(self._ocr(array, roi, errors), roi, maximum=99999)
+        return fields
+
     def read(self, array):
         errors = []
         rgb = array[..., ::-1]
+        lesson = self._lesson_fields(array, errors)
+        if lesson:
+            fields = lesson
+            present = sum(fields[key]["value"] is not None for key in ("turns_remaining", "stamina", "genki")) >= 2
+            return self._finish(array, rgb, fields, present, "lesson", errors)
         fields = {key: unknown_field() for key in STATE_FIELDS}
-        fields["turns_remaining"] = number_views(
-            [number_field(self._ocr(array, roi, errors), roi, maximum=99) for roi in ([14, 64, 88, 64], [32, 69, 60, 46])]
-        )
-        for key, roi, maximum in [
-            ("stamina", [563, 207, 86, 40], 999),
-        ]:
-            fields[key] = number_field(self._ocr(array, roi, errors), roi, maximum=maximum)
-        fields["genki"] = number_views(
-            [number_field(self._ocr(array, roi, errors), roi, maximum=99999) for roi in ([643, 170, 72, 43], [648, 172, 67, 40])]
-        )
+        fields["turns_remaining"] = number_views([number_field(self._ocr(array, roi, errors), roi, maximum=99) for roi in EXAM_HUD["turns"]])
+        roi = EXAM_HUD["added"]
+        fields["turns_added"] = added_turns_field(self._ocr(array, roi, errors), roi)
+        roi = EXAM_HUD["stamina"]
+        fields["stamina"] = number_field(centered(self._ocr(array, roi, errors), STAMINA_CENTER_X), roi, maximum=999)
+        fields["genki"] = number_views([number_field(self._ocr(array, roi, errors), roi, maximum=99999) for roi in EXAM_HUD["genki"]])
         roi = [106, 44, 115, 81]
         raw = self._ocr(array, roi, errors)
         fields["attribute_multiplier_percent"] = number_field(raw, roi, maximum=99999, percent=True)
@@ -417,9 +516,13 @@ class BattleStateReader:
             value, confidence = max(attributes, key=lambda item: item[1])
             fields["attribute"] = {"value": value, "status": "observed", "roi": roi, "raw_ocr": raw, "confidence": confidence}
         present = sum(fields[key]["value"] is not None for key in ("turns_remaining", "stamina", "genki", "attribute_multiplier_percent")) >= 3
+        return self._finish(array, rgb, fields, present, "exam", errors)
+
+    def _finish(self, array, rgb, fields, present, layout, errors):
         state = {
             "schema_version": 1,
             "hud_present": present,
+            "layout": layout if present else None,
             "fields": fields,
             "buffs": [],
             "unknown_buffs": [],
@@ -435,13 +538,15 @@ class BattleStateReader:
         if not present:
             state["fields"] = {key: unknown_field("battle_hud_not_confirmed", field["roi"], field["raw_ocr"]) for key, field in fields.items()}
             return state
-        score_roi = player_score_roi(rgb)
-        if score_roi:
+        score_roi = player_score_roi(rgb) if layout == "exam" else None
+        if layout == "lesson":
+            state["fields"]["score"] = unknown_field("lesson_shows_goal_counters")
+        elif score_roi:
             state["fields"]["score"] = number_field(self._ocr(array, score_roi, errors), score_roi, maximum=999999999)
             state["score_locator"] = "unique_wide_white_player_rank_frame"
         else:
             state["fields"]["score"] = unknown_field("unsupported_or_ambiguous_score_layout")
-        state["buffs"], state["unknown_buffs"] = self._buffs(array, rgb, errors)
+        state["buffs"], state["unknown_buffs"] = self._buffs(array, rgb, errors, layout)
         state["anomaly"] = self._anomaly(array, errors, state["buffs"])
         state["stance"] = state["anomaly"]["stance"]["value"]
         # 侧边列表可能滚动或省略，未出现的状态不自动补零。
