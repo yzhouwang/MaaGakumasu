@@ -8,7 +8,9 @@ GHL 的影子回放与决策模型按 LiveFrame 读取战斗状态（src/bridge/
 - gib：好印象增加量 [百分比, 回合]；gie：好印象效果百分比；sb：得分提升 [百分比, 回合或 None]；
 - hand：手牌名（从左到右，「+」为强化，读不出为「?」）。战斗中再次强化的「+」牌显示「++」，GHL 没有这种牌，记为「+」。
 
-另附 drinks：饮料槽中的饮料名（从左到右；没有登记图标的饮料为「?」），GHL 用来对应饮料候选。
+另附 drinks：饮料槽中的饮料名（从左到右；没有登记图标的饮料为「?」），GHL 用来对应饮料候选；
+buffsComplete：Buff 列末尾出现「⋮」（显示不下）或被提示框盖住时为 False，此时 b 中没有的 Buff 不能当作 0；
+turnTypes：考试从当前回合起各剩余回合的属性（回合环色段），读到的段数与剩余回合一致时才给出。
 
 读不到的字段为 None，并列入 unknown，不按常见值补齐。仅供本地开发调试的外部决策者与离线评估使用。
 """
@@ -84,9 +86,13 @@ def ghl_frame(result, drink_boxes=None):
         elif buff["key"] == "goodImpressionEffectPercent":
             frame["gie"] = buff["value"]
     frame["b"] = buffs
+    frame["buffsComplete"] = not (state.get("buffs_overflow") or state.get("buffs_occluded"))
     if score_buffs:
         frame["sb"] = score_buffs
     frame["hand"] = hand_names(result.get("cards") or [])
     frame["drinks"] = drink_names(state, drink_boxes)
+    ring = state.get("turn_ring") or {}
+    if ring.get("status") == "observed":
+        frame["turnTypes"] = ring["remaining"]
     frame["unknown"] = sorted(key for key, value in frame.items() if value is None)
     return frame

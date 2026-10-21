@@ -2,6 +2,7 @@
 
 import re
 import json
+import math
 import hashlib
 import unicodedata
 from pathlib import Path
@@ -45,6 +46,14 @@ STAMINA_CENTER_X = (560, 640)
 # 课程的 Buff 列比考试高约 13 像素，第一个图标会越出模板登记的区域上沿；考试 Buff 列上方是 P 道具
 # 触发预告的大图标，不放宽。
 BUFF_COLUMN = {"lesson": ([0, 210, 84, 560], 250), "exam": (None, 263)}
+# Buff 列显示不下时末尾出现竖排三点「⋮」，OCR 读作「000」「doo」等窄而高的文字。
+BUFF_OVERFLOW_ROI = [20, 690, 60, 110]
+# Buff 数值文字所在的列；P 道具触发预告（「好印象が15以上の場合…」）、技能卡说明框与 Buff 名提示会盖住这一列。
+# 不含右侧的出牌提示（「もう一枚使用」）、列下方的「スキルカード使用数追加」与课程圆环下的「CLEAR」。
+BUFF_TEXT_ROI = [56, 200, 180, 560]
+# 考试剩余回合环：中心与色段所在半径。每回合一段（中间考试 10 段、最终考试 12 段），自正上方标记处起逆时针，
+# 橙为 Vi、粉为 Vo、蓝为 Da；已过的回合原位变暗，不旋转。
+TURN_RING = {"center": (62, 90), "radius": 41, "segments": (10, 12)}
 ANOMALY_FIELDS = (
     "stance",
     "stance_stage",
@@ -108,6 +117,70 @@ def added_turns_field(raw, roi):
         return {"value": 0, "status": "not_shown", "confidence": None, "roi": roi, "raw_ocr": raw}
     value, confidence = max(values, key=lambda item: item[1])
     return {"value": value, "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw}
+
+def buff_column_occluded(raw):
+    """Buff 列中出现长句（提示框）时，被盖住的 Buff 读不到，不能当作 0。数值文字都很短，次数类（「ターン内1回」「レッスン中1回」）除外。"""
+    for item in raw:
+        text = unicodedata.normalize("NFKC", item["text"]).strip()
+        if item["confidence"] >= 0.70 and len(re.sub(r"[\d%+.\s]", "", text)) >= 5 and not re.fullmatch(r"(?:[タ夕][ー一-]ン内|レッスン中|試験中)\d*回", text):
+            return True
+    return False
+
+
+def buff_overflow(raw):
+    """Buff 列末尾是否有「⋮」：有则未显示的 Buff 不能当作 0。"""
+    return any(
+        re.fullmatch(r"[0oOdD]{2,3}", unicodedata.normalize("NFKC", item["text"]).strip()) and item["box"][2] <= 16 and item["box"][3] >= 18
+        for item in raw
+    )
+
+
+def ring_color(bgr):
+    """回合环色段的属性；暗色（已过回合或段间缝隙）为 None，无法判断为「?」。"""
+    blue, green, red = (float(value) for value in bgr)
+    if max(red, green, blue) < 110:
+        return None
+    if blue > red + 40 and blue > green:
+        return "Da"
+    if red > 180 and green > 120 and blue < 120:
+        return "Vi"
+    if red > 160 and blue > 70 and green < 120:
+        return "Vo"
+    return "?"
+
+
+def ring_samples(array, segments, offset):
+    """按角度依次取环上各段（或段间缝隙，offset 为 0 时）的多数颜色。"""
+    (cx, cy), radius = TURN_RING["center"], TURN_RING["radius"]
+    colors = []
+    for index in range(segments):
+        votes = []
+        for dr in (-2, 0, 2):
+            for degrees in (-3, 0, 3):
+                angle = math.radians(offset + index * 360 / segments + degrees)
+                x, y = round(cx - (radius + dr) * math.sin(angle)), round(cy - (radius + dr) * math.cos(angle))
+                votes.append(ring_color(array[y, x]))
+        colors.append(max(set(votes), key=votes.count))
+    return colors
+
+
+def colored_count(colors):
+    return sum(color in ("Vi", "Vo", "Da") for color in colors)
+
+
+def turn_ring(array, turns):
+    """
+    考试剩余回合各回合的属性。段数取色段中心有色、段间缝隙无色最符合的一种；
+    读到的有色段数等于剩余回合时为 observed，否则为 partial（当前回合段被标记遮挡或只剩一回合时段数难辨）。
+    """
+    fit = {
+        count: colored_count(ring_samples(array, count, 180 / count)) - colored_count(ring_samples(array, count, 0)) for count in TURN_RING["segments"]
+    }
+    if len(set(fit.values())) == 1:
+        return {"segments": None, "remaining": [], "status": "unknown"}
+    count = max(fit, key=fit.get)
+    remaining = [color for color in ring_samples(array, count, 180 / count) if color in ("Vi", "Vo", "Da")]
+    return {"segments": count, "remaining": remaining, "status": "observed" if turns is not None and len(remaining) == turns else "partial"}
 
 
 def masked_correlation(crop, template):
@@ -623,7 +696,11 @@ class BattleStateReader:
             state["score_locator"] = "unique_wide_white_player_rank_frame"
         else:
             state["fields"]["score"] = unknown_field("unsupported_or_ambiguous_score_layout")
+        if layout == "exam":
+            state["turn_ring"] = turn_ring(array, state["fields"]["turns_remaining"]["value"])
         state["buffs"], state["unknown_buffs"] = self._buffs(array, rgb, errors, layout)
+        state["buffs_overflow"] = buff_overflow(self._ocr(array, BUFF_OVERFLOW_ROI, errors))
+        state["buffs_occluded"] = buff_column_occluded(self._ocr(array, BUFF_TEXT_ROI, errors))
         state["drinks"] = self._drinks(array, errors)
         state["anomaly"] = self._anomaly(array, errors, state["buffs"])
         state["stance"] = state["anomaly"]["stance"]["value"]

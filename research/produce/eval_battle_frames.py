@@ -129,6 +129,10 @@ def main():
             frames += 1
             wrong = {}
             pairs = label_fields(decision["f"], read, layout)
+            types = fixture["battles"][decision["battle"]].get("turnTypes")
+            if types and decision["f"]["t"] > 0:
+                # 回合环只在读到的色段数等于剩余回合时给出；未给出按错计（覆盖率）。
+                pairs["turnTypes"] = (types[len(types) - decision["f"]["t"] :], read.get("turnTypes"))
             if decision["id"] in held:
                 pairs["drinks"] = (held[decision["id"]], read["drinks"])
             for field, (want, got) in pairs.items():

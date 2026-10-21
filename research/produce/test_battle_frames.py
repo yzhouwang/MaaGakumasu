@@ -5,6 +5,7 @@
 
 import sys
 import json
+import math
 import shutil
 import unittest
 from pathlib import Path
@@ -14,7 +15,18 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 from ghl_frame import ghl_frame
-from produce.state import EXAM_HUD, LESSON_HUD, BattleStateReader, turn_fields, added_turns_field, masked_correlation
+from produce.state import (
+    EXAM_HUD,
+    TURN_RING,
+    LESSON_HUD,
+    BattleStateReader,
+    turn_ring,
+    turn_fields,
+    buff_overflow,
+    added_turns_field,
+    masked_correlation,
+    buff_column_occluded,
+)
 from produce.console import state_lines
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -55,6 +67,19 @@ class TurnParsingTest(unittest.TestCase):
         turns, added = turn_fields([token("ターン", [0, 0, 1, 1])], [0, 0, 1, 1])
         self.assertIsNone(turns["value"])
         self.assertIsNone(added["value"])
+
+    def test_buff_overflow_marker(self):
+        self.assertTrue(buff_overflow([token("doo", [39, 727, 7, 21], 0.56)]))
+        self.assertTrue(buff_overflow([token("000", [36, 725, 14, 26], 0.93)]))
+        # 普通数值（宽）不是「⋮」。
+        self.assertFalse(buff_overflow([token("000", [36, 725, 40, 26])]))
+        self.assertFalse(buff_overflow([token("—", [0, 640, 120, 200])]))
+
+    def test_buff_column_occlusion(self):
+        self.assertTrue(buff_column_occluded([token("好印象が15以上の場", [110, 187, 210, 26])]))
+        values = [token("1ターン", [62, 300, 80, 24]), token("ターン内1回", [62, 540, 120, 24]), token("夕ーン内1回", [56, 631, 120, 30])]
+        values += [token("レッスン中1回", [116, 737, 119, 22]), token("65%", [62, 330, 60, 24])]
+        self.assertFalse(buff_column_occluded(values))
 
     def test_exam_added_turn_pill(self):
         self.assertEqual(added_turns_field([token("+1", [99, 120, 53, 34])], EXAM_HUD["added"])["value"], 1)
@@ -199,6 +224,41 @@ class FadedFallbackTest(unittest.TestCase):
         state = self.read({"score_faded": 0.97}, value=None)
         self.assertEqual(state["buffs"], [])
         self.assertIn("fallback_without_value", [item.get("reason") for item in state["unknown_buffs"]])
+
+
+class TurnRingTest(unittest.TestCase):
+    """考试回合环：自正上方标记处起逆时针各段的颜色，已过的回合原位变暗。"""
+
+    COLORS = {"Vi": (40, 170, 240), "Vo": (140, 60, 230), "Da": (240, 140, 30)}  # BGR
+
+    def ring_image(self, types, elapsed=0):
+        image = np.full((1280, 720, 3), (235, 215, 190), dtype=np.uint8)  # 浅色背景
+        (cx, cy), radius, count = TURN_RING["center"], TURN_RING["radius"], len(types)
+        for y in range(cy - radius - 8, cy + radius + 9):
+            for x in range(cx - radius - 8, cx + radius + 9):
+                distance = math.hypot(x - cx, y - cy)
+                if distance > radius + 6:
+                    continue
+                image[y, x] = (60, 45, 40)  # 环底色（暗）
+                if abs(distance - radius) > 4:
+                    continue
+                # 逆时针自正上方起的角度；段之间留缝。
+                angle = math.degrees(math.atan2(cx - x, cy - y)) % 360
+                index, within = divmod(angle, 360 / count)
+                if 4 < within < 360 / count - 4 and int(index) >= elapsed:
+                    image[y, x] = self.COLORS[types[int(index)]]
+        return image
+
+    def test_full_ring_at_the_start(self):
+        types = ["Vi", "Vo", "Vi", "Vo", "Vi", "Da", "Vi", "Da", "Vo", "Vi"]
+        self.assertEqual(turn_ring(self.ring_image(types), 10), {"segments": 10, "remaining": types, "status": "observed"})
+
+    def test_elapsed_turns_go_dark_in_place(self):
+        types = ["Vi", "Da", "Vo", "Vo", "Da", "Vi", "Vo", "Vi", "Vi", "Da", "Vo", "Vi"]
+        ring = turn_ring(self.ring_image(types, elapsed=5), 7)
+        self.assertEqual((ring["segments"], ring["remaining"], ring["status"]), (12, types[5:], "observed"))
+        # 剩余回合与色段数不一致：不作为已确认的回合属性。
+        self.assertEqual(turn_ring(self.ring_image(types, elapsed=5), 8)["status"], "partial")
 
 
 class GhlFrameTest(unittest.TestCase):
