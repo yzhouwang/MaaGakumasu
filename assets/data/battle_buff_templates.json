@@ -549,6 +549,90 @@
 				"group": "good_impression_badge",
 				"region": [26, 4, 16, 20]
 			}
+		},
+		{
+			"id": "score_up_faded",
+			"key": "scoreBuffPercent",
+			"name": "得分提升",
+			"unit": "percent",
+			"template": "produce/buffs/score_up_faded.png",
+			"threshold": 0.94,
+			"method": 10001,
+			"roi": [0, 232, 84, 538],
+			"green_mask": true,
+			"fallback": true,
+			"reading": {
+				"format": "percent",
+				"roi_offset": [36, 29, 125, 42],
+				"second_roi_offset": [42, 31, 119, 40]
+			},
+			"duration_reading": {
+				"format": "turns",
+				"roi_offset": [36, -9, 125, 38]
+			},
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "387014dd3026c63c720bed068592e922907e99f0febfeef5bc59f39bf7f73321",
+				"box": [16, 296, 56, 56],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Faded (translucent) variant of the score-up arrow glyph, shown with 1ターン and a percentage; hand-read frames of the same exam list the score buff at these values. Fallback template: counted only when no regular template reaches its threshold at the same place and its value is read.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"center": [28, 28],
+				"radius": 30,
+				"rectangles": [
+					[36, 36, 20, 20],
+					[38, 0, 18, 20],
+					[38, 25, 18, 31]
+				]
+			},
+			"template_sha256": "76342b9be46ea2ef7d27bda6dacece39f7e4030b2a4e9a20c7dfc54bff75235d",
+			"discriminator": {
+				"group": "faded_glyph",
+				"region": [14, 12, 28, 32]
+			}
+		},
+		{
+			"id": "half_cost_faded",
+			"key": "halfCostTurns",
+			"name": "消耗体力减少",
+			"unit": "turns",
+			"template": "produce/buffs/half_cost_faded.png",
+			"threshold": 0.94,
+			"method": 10001,
+			"roi": [0, 232, 84, 538],
+			"green_mask": true,
+			"fallback": true,
+			"reading": {
+				"format": "turns",
+				"roi_offset": [36, 23, 125, 45],
+				"second_roi_offset": [42, 25, 119, 43]
+			},
+			"source": {
+				"run_id": "decider-mailbox-2026-10-21-sonnet",
+				"frame_sha256": "bae4fd8527da7e8aa9ff20da141214561291536a04f308e7da2b9c3cea660ab6",
+				"box": [16, 542, 56, 56],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-20",
+				"verification": {
+					"method": "hand_read_frames_cross_check",
+					"evidence": "Faded (translucent) variant of the blue cost-reduction heart, shown with 1ターン; hand-read frames of the same exam list 消費体力減少 1. Fallback template: counted only when no regular template reaches its threshold at the same place and its value is read.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"center": [28, 28],
+				"radius": 30,
+				"rectangles": [[36, 24, 20, 32]]
+			},
+			"template_sha256": "4dd835d784750bf3b527fe3cacde3ada6b1e7d56a07e171f0356882fb0c0e590",
+			"discriminator": {
+				"group": "faded_glyph",
+				"region": [14, 12, 28, 32]
+			}
 		}
 	],
 	"stances": [

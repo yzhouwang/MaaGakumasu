@@ -331,6 +331,11 @@ class BattleStateReader:
         roi, first_center = BUFF_COLUMN[layout]
         for group in self._matches(array, "buff", errors, roi):
             original_group = group
+            # 褪色图标（fallback 模板）对比度低，也会在背景上取得高分：同一位置已有常规模板达到阈值时，
+            # 只保留与最佳常规模板同一 Buff 的褪色模板，其余不参与竞争。
+            regular = [hit for hit in group if not hit["definition"].get("fallback") and hit["score"] >= hit["definition"]["threshold"]]
+            if regular:
+                group = [hit for hit in group if not hit["definition"].get("fallback") or hit["definition"]["key"] == regular[0]["definition"]["key"]]
             unit_evidence = None
             family = group[0]["definition"].get("value_family")
             relatives = [hit for hit in group if family and hit["definition"].get("value_family") == family]
@@ -403,6 +408,10 @@ class BattleStateReader:
             if not conflict:
                 reading = next((view for view in views if view["value"] is not None), reading)
             value = reading["value"] if not conflict else None
+            if entry.get("fallback") and value is None:
+                # 褪色模板只在读到数值时采信，避免把背景当作 Buff。
+                unknown.append({"box": box, "icon_evidence": evidence, "value": None, "status": "unknown", "reason": "fallback_without_value"})
+                continue
             duration = value if entry["unit"] == "turns" else None
             duration_evidence = None
             if entry.get("duration_reading"):

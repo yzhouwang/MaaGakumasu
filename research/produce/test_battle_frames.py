@@ -4,6 +4,8 @@
 """
 
 import sys
+import json
+import shutil
 import unittest
 from pathlib import Path
 
@@ -137,6 +139,66 @@ class BadgeDiscriminationTest(unittest.TestCase):
         group, evidence = self.reader._discriminated(frame, [self.effect, self.gain])
         self.assertEqual(len(group), 2)
         self.assertIsNotNone(evidence)
+
+
+class FadedFallbackTest(unittest.TestCase):
+    """褪色模板（fallback）只在同一位置没有其他 Buff 的常规模板达到阈值、且读到数值时采信。"""
+
+    TEMP = ROOT / "debug" / "research" / "produce" / "tests" / "battle_frames"
+
+    @staticmethod
+    def entry(template_id, key, fallback=False):
+        entry = {
+            "id": template_id,
+            "key": key,
+            "name": key,
+            "unit": "turns",
+            "template": f"produce/buffs/{template_id}.png",
+            "threshold": 0.94,
+            "method": 10001,
+            "roi": [0, 232, 84, 538],
+            "reading": {"format": "turns", "roi_offset": [36, 23, 125, 45]},
+        }
+        return {**entry, "fallback": True} if fallback else entry
+
+    def setUp(self):
+        self.TEMP.mkdir(parents=True, exist_ok=True)
+        self.registry = self.TEMP / "registry.json"
+        entries = [self.entry("cost", "halfCostTurns"), self.entry("condition", "goodConditionTurns"), self.entry("cost_faded", "halfCostTurns", True)]
+        entries.append(self.entry("score_faded", "scoreBuffPercent", True))
+        self.registry.write_text(json.dumps({"buffs": entries}), encoding="utf-8")
+
+    def tearDown(self):
+        target = self.TEMP.resolve()
+        if target.is_relative_to((ROOT / "debug").resolve()):
+            shutil.rmtree(target)
+
+    def read(self, scores, value="1ターン"):
+        box = [16, 481, 56, 56]
+        screen = lesson_screen("CLEARまで", "90")
+
+        def ocr(array, roi):
+            if tuple(roi) in screen:
+                return screen[tuple(roi)]
+            return [token(value, [roi[0] + 2, roi[1] + 2, 60, 30])] if value and roi[0] < 200 and roi[1] >= 200 else []
+
+        def match(array, definition):
+            return [{"score": scores[definition["id"]], "box": box}] if definition["id"] in scores else []
+
+        return BattleStateReader(self.registry, ocr, match).read(IMAGE)
+
+    def test_faded_of_another_buff_cannot_shadow_a_regular_match(self):
+        state = self.read({"cost": 0.99, "score_faded": 0.985})
+        self.assertEqual([(buff["key"], buff["value"]) for buff in state["buffs"]], [("halfCostTurns", 1)])
+
+    def test_faded_of_the_same_buff_breaks_a_near_tie(self):
+        state = self.read({"cost_faded": 1.0, "cost": 0.952, "condition": 0.939})
+        self.assertEqual([buff["key"] for buff in state["buffs"]], ["halfCostTurns"])
+
+    def test_faded_without_a_value_is_not_a_buff(self):
+        state = self.read({"score_faded": 0.97}, value=None)
+        self.assertEqual(state["buffs"], [])
+        self.assertIn("fallback_without_value", [item.get("reason") for item in state["unknown_buffs"]])
 
 
 class GhlFrameTest(unittest.TestCase):
