@@ -14,6 +14,10 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
 
 用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
     python tools/decider/ghl_readings.py --mailbox debug/decider/mailbox --out debug/decider/mailbox/ghl_readings.jsonl
+    python tools/decider/ghl_readings.py --mailbox debug/decider/mailbox --follow   # 实况：监视 requests/，逐条追加到 ghl/readings.jsonl
+
+--follow 用于 GHL 的实况桥（src/bridge/maaLive.ts）：请求一写入就读画面并追加一行，不等决策者答复；
+答复已存在时一并记入 choice，否则为 null（GHL 从 responses/ 取答复）。只读画面，不写 responses/。
 """
 
 import re
@@ -205,50 +209,99 @@ def week_reading(vision, mailbox, request):
     return dict(fields, resources=request.get("state") or {})
 
 
+class Reader:
+    """按请求读画面；离线读整个信箱与实况逐条读共用。"""
+
+    def __init__(self, mailbox, log_dir):
+        from produce.state import BattleStateReader
+        from produce.catalog import RewardCatalog, SkillCardCatalog
+        from produce.analysis import OfflineVision
+
+        resource = ROOT / "assets" / "resource" / "base"
+        database = ROOT / "assets" / "data" / "produce_skill_cards.json"
+        self.mailbox = mailbox
+        self.catalog = SkillCardCatalog(database, ROOT / "assets" / "data" / "skill_card_aliases.json")
+        self.rewards = RewardCatalog(self.catalog, database.with_name("produce_reward_items.json"))
+        self.vision = OfflineVision(resource, log_dir)
+        self.vision.state_reader = BattleStateReader(
+            database.with_name("battle_buff_templates.json"), self.vision._read_title, self.vision.match_buff_templates, resource / "image"
+        )
+
+    def read(self, request, choice=None):
+        from ghl_frame import read_battle_request
+        from utils.image_io import read_image
+        from produce.analysis import normalized_image
+
+        row = {"id": request["id"], "kind": request["kind"], "choice": choice}
+        try:
+            if request["kind"] == "battle":
+                _, row["frame"] = read_battle_request(self.vision, self.catalog, read_image(self.mailbox / request["frame"]), request)
+                row["battle_id"] = (request.get("context") or {}).get("battle_id")
+            elif request["kind"] == "reward":
+                row["reward"] = reward_reading(self.vision, self.rewards, self.mailbox, request)
+            elif request["kind"] == "week":
+                row["week"] = week_reading(self.vision, self.mailbox, request)
+            elif request["kind"] == "customize":
+                row["customize"] = customize_reading(self.vision, self.catalog, self.mailbox, request)
+            elif request["kind"] == "consult":
+                array = normalized_image(read_image(self.mailbox / request["frame"]))
+                row["consult"] = {"p": first_number(texts(self.vision, array, P_COUNTER_ROI))}
+        except Exception as exc:
+            row["error"] = str(exc)
+        return row
+
+
+def follow(reader, out, poll=0.3):
+    """监视 requests/：每个新请求读一次画面并追加一行（按请求 id 的顺序，即提出的顺序）。"""
+    import time
+
+    done = set()
+    if out.exists():
+        done = {json.loads(line)["id"] for line in out.read_text(encoding="utf-8").splitlines() if line.strip()}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    print(f"监视 {reader.mailbox / 'requests'} → {out}（已有 {len(done)} 条）", flush=True)
+    while True:
+        for path in sorted((reader.mailbox / "requests").glob("*.json")):
+            if path.stem in done:
+                continue
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            response = reader.mailbox / "responses" / path.name
+            try:
+                choice = json.loads(response.read_text(encoding="utf-8")).get("choice") if response.exists() else None
+            except (OSError, ValueError):
+                choice = None
+            row = reader.read(request, choice)
+            with out.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+            done.add(path.stem)
+            print(f"[{row['id']}] {row['kind']}{' 读取失败：' + row['error'] if row.get('error') else ''}", flush=True)
+        time.sleep(poll)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mailbox", type=Path, required=True, help="决策信箱目录（含 decisions.jsonl 与 frames/）")
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, help="输出 JSONL；--follow 时默认 <信箱>/ghl/readings.jsonl")
+    parser.add_argument("--follow", action="store_true", help="实况：监视 requests/，逐条追加")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
-
-    from ghl_frame import read_battle_request
-    from produce.state import BattleStateReader
-    from utils.image_io import read_image
-    from produce.catalog import RewardCatalog, SkillCardCatalog
-    from produce.analysis import OfflineVision, normalized_image
-
-    resource = ROOT / "assets" / "resource" / "base"
-    database = ROOT / "assets" / "data" / "produce_skill_cards.json"
-    catalog = SkillCardCatalog(database, ROOT / "assets" / "data" / "skill_card_aliases.json")
-    rewards = RewardCatalog(catalog, database.with_name("produce_reward_items.json"))
-    vision = OfflineVision(resource, args.out.parent / "vision_log")
-    vision.state_reader = BattleStateReader(database.with_name("battle_buff_templates.json"), vision._read_title, vision.match_buff_templates, resource / "image")
-
+    out = args.out or (args.mailbox / "ghl" / "readings.jsonl" if args.follow else None)
+    if out is None:
+        parser.error("--out is required without --follow")
+    reader = Reader(args.mailbox, out.parent / "vision_log")
+    if args.follow:
+        follow(reader, out)
+        return
     rows = []
     for line in (args.mailbox / "decisions.jsonl").read_text(encoding="utf-8").splitlines():
         record = json.loads(line)
-        request = record["request"]
-        row = {"id": request["id"], "kind": request["kind"], "choice": (record.get("response") or {}).get("choice")}
-        try:
-            if request["kind"] == "battle":
-                _, row["frame"] = read_battle_request(vision, catalog, read_image(args.mailbox / request["frame"]), request)
-                row["battle_id"] = (request.get("context") or {}).get("battle_id")
-            elif request["kind"] == "reward":
-                row["reward"] = reward_reading(vision, rewards, args.mailbox, request)
-            elif request["kind"] == "week":
-                row["week"] = week_reading(vision, args.mailbox, request)
-            elif request["kind"] == "customize":
-                row["customize"] = customize_reading(vision, catalog, args.mailbox, request)
-            elif request["kind"] == "consult":
-                array = normalized_image(read_image(args.mailbox / request["frame"]))
-                row["consult"] = {"p": first_number(texts(vision, array, P_COUNTER_ROI))}
-        except Exception as exc:
-            row["error"] = str(exc)
-        rows.append(row)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-    print(f"{len(rows)} 条决策 → {args.out}")
+        rows.append(reader.read(record["request"], (record.get("response") or {}).get("choice")))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    print(f"{len(rows)} 条决策 → {out}")
 
 
 if __name__ == "__main__":

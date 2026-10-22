@@ -284,8 +284,12 @@ class GhlFrameTest(unittest.TestCase):
             {"key": "concentration", "value": 3, "duration": None},
         ]
         cards = [
-            {"box": [265, 884, 189, 249], "identity": {"status": "unknown", "database_card_id": None}},
-            {"box": [49, 884, 187, 250], "identity": {"status": "matched", "database_card_id": 7, "database_name": "ファンサの基本", "observed_plus_count": 0}},
+            {"candidate_id": "unplayable_0", "box": [265, 884, 189, 249], "identity": {"status": "unknown", "database_card_id": None}},
+            {
+                "candidate_id": "card_0",
+                "box": [49, 884, 187, 250],
+                "identity": {"status": "matched", "database_card_id": 7, "database_name": "ファンサの基本", "observed_plus_count": 0},
+            },
         ]
         frame = ghl_frame({"battle_state": state, "cards": cards})
         self.assertEqual((frame["layout"], frame["t"], frame["tAdd"], frame["bonus"], frame["st"], frame["g"]), ("lesson", 5, 1, 41, 26, 12))
@@ -293,6 +297,8 @@ class GhlFrameTest(unittest.TestCase):
         self.assertEqual(frame["b"], {"goodImpressionTurns": 23})
         self.assertEqual(frame["sb"], [[59, 1]])
         self.assertEqual(frame["hand"], ["ファンサの基本", "?"])
+        # 每个手牌位置对应的请求候选，GHL 据此把手牌对应到候选。
+        self.assertEqual(frame["slots"], ["card_0", "unplayable_0"])
         self.assertEqual(frame["unknown"], [])
 
     def test_drinks_follow_the_candidate_slots(self):
