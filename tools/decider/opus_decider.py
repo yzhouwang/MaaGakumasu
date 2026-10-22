@@ -6,6 +6,12 @@
 用法（仓库根目录，需先 `claude auth login`）：
     python tools/decider/opus_decider.py --context "初 LEGEND，十王星南【ガラクタロード】，理性·好印象"
     python tools/decider/opus_decider.py --dry-run          # 不调用模型，直接回答 fallback，用于联调
+    python tools/decider/opus_decider.py --ghl              # GHL 优先：GHL 的决策模型能答的由它答，其余照常问 LLM
+
+--ghl：GHL（gakumas-headless-lab）的实况桥（scripts/maa/live.ts，配合 ghl_readings.py --follow 与决策模型服务）
+把它对每个请求的选择写入信箱的 ghl/answers.jsonl。本决策者对范围内的请求先等 GHL 的选择（--ghl-wait 秒），
+采用决策模型在本请求候选中的最优项；GHL 跳过、超时或没有可执行的候选时照常问 LLM（--ghl-only 时回答 fallback）。
+课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。
 """
 
 import os
@@ -31,6 +37,74 @@ ANSWER_SCHEMA = {
     },
     "required": ["choice", "reason"],
 }
+
+
+# GHL 的任务 → --ghl-scope 的名称。
+GHL_SCOPES = {
+    "exam": ("ghl/battle-exam",),
+    "lesson": ("ghl/battle-lesson",),
+    "week": ("ghl/week",),
+    "offer": ("ghl/card-offer", "ghl/drink-offer", "ghl/midterm-item", "ghl/start-bonus"),
+}
+
+
+def read_ghl_answers(path: Path) -> dict:
+    """GHL 实况桥的答复（每请求一行，后写的一行取代前面的）；只读以换行结尾的行，正在写入的行下次再读。"""
+    try:
+        text = path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    answers = {}
+    for line in text.split("\n")[:-1]:
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        answers[answer.get("id")] = answer
+    return answers
+
+
+def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider", lesson_drinks: bool = False):
+    """
+    GHL 对请求的选择：范围内、且有本请求的候选可执行时返回 {"choice", "reason"}，否则返回 (None, 原因)。
+
+    decider 策略取决策模型在可执行候选中概率最高的一项；reference 策略取 GHL 的参照策略（战斗 B4、其余 B1v2）。
+    课程中默认不采用饮料。职业课（class_option）的选项在 GHL 中是「上课:属性」，候选为属性。
+    """
+    task = answer.get("task")
+    if answer.get("skip"):
+        return None, f"GHL skipped: {answer['skip']}"
+    if not any(task in GHL_SCOPES[name] for name in scope):
+        return None, f"GHL task {task} not in scope"
+    ids = {item["id"] for item in request["candidates"]}
+
+    def live_of(key):
+        live = (answer.get("optionLive") or {}).get(key)
+        if request["kind"] == "class_option":
+            return live[3:] if live and live.startswith("上课:") else None
+        return live
+
+    def allowed(live):
+        return live in ids and (lesson_drinks or task != "ghl/battle-lesson" or not live.startswith("drink_"))
+
+    texts = {option[0]: option[1] for option in answer.get("options") or []}
+    if policy == "reference":
+        ref = answer.get("ref") or {}
+        live = live_of(ref.get("key"))
+        if not allowed(live):
+            return None, f"GHL reference {ref.get('policy')} chose no candidate here ({live})"
+        return {"choice": live, "reason": f"GHL {ref.get('policy')}: {texts.get(ref.get('key'), '')}"[:300]}, None
+    decider = answer.get("decider") or {}
+    if decider.get("error") or not decider.get("probabilities"):
+        return None, f"GHL decider gave no answer ({decider.get('error', 'no probabilities')})"
+    scored = [(p, key, live_of(key)) for key, p in decider["probabilities"].items()]
+    scored = [item for item in scored if allowed(item[2])]
+    if not scored:
+        return None, "GHL decider: no candidate it may choose"
+    p, key, live = max(scored)
+    top = decider.get("key")
+    note = "" if key == top else f"; its top choice ({texts.get(top, top)}) is not offered or not allowed here"
+    return {"choice": live, "reason": f"GHL decider p={p:.2f}: {texts.get(key, '')}{note}"[:300]}, None
 
 
 def write_atomic(path: Path, value: dict):
@@ -89,6 +163,7 @@ class Decider:
         except (OSError, ValueError):
             self.notes = []
         self.reader = None
+        self.ghl_scope = set(args.ghl_scope.split(",")) if getattr(args, "ghl", False) else set()
         self.system_prompt = (Path(__file__).with_name("system_prompt.md")).read_text(encoding="utf-8")
         for extra in args.extra_prompt or []:
             self.system_prompt += "\n\n" + Path(extra).read_text(encoding="utf-8")
@@ -156,10 +231,36 @@ class Decider:
         }
         return answer
 
+    def ghl_answer(self, request: dict):
+        """等 GHL 实况桥对该请求的选择（至多 --ghl-wait 秒），返回 (答复, 未采用的原因)。"""
+        if request["kind"] not in ("battle", "week", "reward", "class_option"):
+            return None, f"kind {request['kind']}: GHL does not decide it"
+        deadline = time.time() + self.args.ghl_wait
+        while True:
+            answer = read_ghl_answers(self.mailbox / "ghl" / "answers.jsonl").get(request["id"])
+            if answer:
+                return ghl_choice(answer, request, self.ghl_scope, self.args.ghl_policy, self.args.ghl_lesson_drinks)
+            if time.time() >= deadline:
+                return None, f"no GHL answer within {self.args.ghl_wait:.0f} s"
+            time.sleep(0.2)
+
     def handle(self, path: Path):
         request = json.loads(path.read_text(encoding="utf-8"))
         ids = [item["id"] for item in request["candidates"]]
         reading = {}
+        ghl_note = ""
+        if self.args.ghl:
+            started = time.time()
+            answer, why = self.ghl_answer(request)
+            if answer:
+                response = {"id": request["id"], "choice": answer["choice"], "reason": answer["reason"], "source": "ghl", "meta": {"seconds": round(time.time() - started, 1)}}
+                self.finish(path, request, {}, "", response)
+                return
+            ghl_note = why
+            if self.args.ghl_only:
+                response = {"id": request["id"], "choice": request.get("fallback"), "reason": f"GHL only; {why}", "source": "fallback"}
+                self.finish(path, request, {}, "", response)
+                return
         if request["kind"] == "battle" and not self.args.no_vision:
             try:
                 if self.reader is None:
@@ -189,6 +290,12 @@ class Decider:
                     response["meta"] = answer.get("_meta")
             except Exception as exc:
                 response["reason"] = f"decider error: {exc}"
+        if ghl_note:
+            response["ghl"] = ghl_note
+        self.finish(path, request, reading, prompt, response)
+
+    def finish(self, path: Path, request: dict, reading: dict, prompt: str, response: dict):
+        """写入答复与决策日志。"""
         write_atomic(self.mailbox / "responses" / path.name, response)
         with open(self.mailbox / "decisions.jsonl", "a", encoding="utf-8") as log:
             log.write(
@@ -233,8 +340,17 @@ def main():
     parser.add_argument("--no-vision", action="store_true", help="跳过手牌/HUD 离线识别")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="处理当前积压的请求后退出")
+    parser.add_argument("--ghl", action="store_true", help="GHL 优先：范围内的请求采用 GHL 实况桥的选择（ghl/answers.jsonl）")
+    parser.add_argument("--ghl-scope", default="exam,lesson,week,offer", help="GHL 决定的范围：exam、lesson、week（含职业课）、offer，逗号分隔")
+    parser.add_argument("--ghl-policy", choices=("decider", "reference"), default="decider", help="decider：决策模型；reference：GHL 的参照策略（B4/B1v2）")
+    parser.add_argument("--ghl-wait", type=float, default=20, help="等 GHL 选择的秒数，超时则照常问 LLM")
+    parser.add_argument("--ghl-lesson-drinks", action="store_true", help="允许课程中采用 GHL 选的饮料")
+    parser.add_argument("--ghl-only", action="store_true", help="不问 LLM：GHL 不答的请求回答 fallback（联调用）")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
+    unknown = set(args.ghl_scope.split(",")) - set(GHL_SCOPES)
+    if unknown:
+        parser.error(f"unknown --ghl-scope: {', '.join(sorted(unknown))}")
     Decider(args).run()
 
 

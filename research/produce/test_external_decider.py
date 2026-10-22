@@ -1,4 +1,5 @@
-"""外部决策接口回归：文件信箱的请求/答复/实际采用记录、坐标透传与超时，以及交互式画面循环的安全区域、结束与停止处理。
+"""外部决策接口回归：文件信箱的请求/答复/实际采用记录、坐标透传与超时，交互式画面循环的安全区域、结束与停止处理，
+以及外部决策者的 GHL 优先模式（tools/decider/opus_decider.py --ghl）。
 
 使用合成截图与替身决策者，不连接设备、不调用模型；临时信箱写入 debug/research/produce/tests/。
 需要安装 maafw（截图编码使用 MaaFramework）。
@@ -16,8 +17,9 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT), str(ROOT / "agent")]
+sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 import custom.action.produce as produce_actions
+from opus_decider import Decider, ghl_choice, read_ghl_answers
 from produce.decider import ExternalDecider, run_interactive, _next_session
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -231,6 +233,70 @@ class MailboxTest(unittest.TestCase):
         self.decider.timeout = 30
         self.assertIsNone(self.decider.ask("battle", IMAGE, self.candidates, stopping=lambda: True))
         self.assertEqual(self.consumed(), [(None, "timeout"), (None, "stopped")])
+
+
+def ghl(task, probabilities, option_live, **extra):
+    """GHL 实况桥的一条答复。"""
+    options = [[key, f"option {key}"] for key in option_live]
+    return {"id": "r1", "task": task, "options": options, "optionLive": option_live, "decider": {"key": max(probabilities, key=probabilities.get), "probabilities": probabilities}, **extra}
+
+
+class GhlFirstTest(unittest.TestCase):
+    battle = {"id": "r1", "kind": "battle", "candidates": [{"id": "card_0"}, {"id": "card_1"}, {"id": "drink_0"}, {"id": "skip"}], "fallback": "card_0"}
+    scope = {"exam", "lesson", "week", "offer"}
+
+    def test_best_candidate_the_harness_offers(self):
+        # 决策模型的首选（重抽）没有候选：取可执行候选中概率最高的一项。
+        answer = ghl("ghl/battle-exam", {"1": 0.5, "2": 0.3, "3": 0.2}, {"1": None, "2": "card_1", "3": "skip"})
+        choice, _ = ghl_choice(answer, self.battle, self.scope)
+        self.assertEqual(choice["choice"], "card_1")
+        self.assertIn("not offered", choice["reason"])
+
+    def test_no_drinks_in_lessons(self):
+        answer = ghl("ghl/battle-lesson", {"1": 0.6, "2": 0.3}, {"1": "drink_0", "2": "card_0"})
+        self.assertEqual(ghl_choice(answer, self.battle, self.scope)[0]["choice"], "card_0")
+        self.assertEqual(ghl_choice(answer, self.battle, self.scope, lesson_drinks=True)[0]["choice"], "drink_0")
+        # 考试中照常采用饮料。
+        answer["task"] = "ghl/battle-exam"
+        self.assertEqual(ghl_choice(answer, self.battle, self.scope)[0]["choice"], "drink_0")
+
+    def test_scope_skip_and_errors_go_to_the_llm(self):
+        answer = ghl("ghl/battle-lesson", {"1": 1.0}, {"1": "card_0"})
+        self.assertIsNone(ghl_choice(answer, self.battle, {"exam"})[0])
+        self.assertIsNone(ghl_choice({"id": "r1", "skip": "kind customize: not rebuilt"}, self.battle, self.scope)[0])
+        self.assertIsNone(ghl_choice({"id": "r1", "task": "ghl/battle-exam", "decider": {"error": "timeout"}}, self.battle, self.scope)[0])
+
+    def test_class_answer_and_reference_policy(self):
+        request = {"id": "r1", "kind": "class_option", "candidates": [{"id": "Vo"}, {"id": "Vi"}], "fallback": "Vo"}
+        answer = ghl("ghl/week", {"1": 0.2, "2": 0.7, "3": 0.1}, {"1": "上课:Vo", "2": "上课:Vi", "3": "rest"}, ref={"policy": "B1v2", "key": "1"})
+        self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "Vi")
+        self.assertEqual(ghl_choice(answer, request, self.scope, policy="reference")[0]["choice"], "Vo")
+
+    def test_answers_file_and_ghl_only_response(self):
+        root = ROOT / "debug/research/produce/tests"
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="ghl_first_", dir=root)
+        self.addCleanup(temporary.cleanup)
+        mailbox = Path(temporary.name)
+        for sub in ("requests", "responses", "ghl"):
+            (mailbox / sub).mkdir()
+        answers = [ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_0"}, id="a"), ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_1"}, id="b")]
+        # 正在写入的最后一行不读。
+        (mailbox / "ghl" / "answers.jsonl").write_text("".join(json.dumps(a) + "\n" for a in answers) + '{"id": "c", "ta', encoding="utf-8")
+        self.assertEqual(sorted(read_ghl_answers(mailbox / "ghl" / "answers.jsonl")), ["a", "b"])
+        for request_id in ("b", "z"):
+            (mailbox / "requests" / f"{request_id}.json").write_text(json.dumps({**self.battle, "id": request_id, "frame": "frames/x.png"}), encoding="utf-8")
+        args = SimpleNamespace(
+            mailbox=str(mailbox), extra_prompt=None, context="", ghl=True, ghl_scope="exam,lesson,week,offer", ghl_policy="decider",
+            ghl_wait=0.2, ghl_lesson_drinks=False, ghl_only=True, dry_run=False, no_vision=True,
+        )
+        decider = Decider(args)
+        for request_id in ("b", "z"):
+            decider.handle(mailbox / "requests" / f"{request_id}.json")
+        responses = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (mailbox / "responses").glob("*.json")}
+        self.assertEqual((responses["b"]["choice"], responses["b"]["source"]), ("card_1", "ghl"))
+        # GHL 没有答复：--ghl-only 时回答 fallback。
+        self.assertEqual((responses["z"]["choice"], responses["z"]["source"]), ("card_0", "fallback"))
 
 
 if __name__ == "__main__":
