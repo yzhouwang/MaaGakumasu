@@ -9,7 +9,7 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
   各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
 - customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称与价格、选中的选项与其价格；
-- consult（相谈）：顶部的 P 点数；
+- consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；交換確認对话框另读商品名称、种类与交换前后的 P 点数；
 - 其余种类：种类与答复。
 
 用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
@@ -50,6 +50,11 @@ OPTION_LABEL_ROWS = (808, 60)
 OPTION_PRICE_ROWS = (866, 36)
 # 选项卡上下缘之外的两条横带：只有选中项的括号是橙色。
 SELECTION_BANDS = ((784, 800), (904, 919))
+# 相谈（商店）：左上角的画面标签（相談；卡牌强化、删除画面为「強化」「削除」）。交換確認对话框随商品说明的长短向上伸展，
+# 底部的「P 交换前 → 交换后」一行位置固定；商品名称是提示语「Pポイントを使用して交換しますか」下方、图标右侧的第一行。
+SCREEN_LABEL_ROI = [0, 28, 182, 58]
+EXCHANGE_DIALOG_ROI = [20, 300, 680, 700]
+EXCHANGE_P_ROI = [80, 990, 560, 60]
 REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
 ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
 
@@ -100,6 +105,36 @@ def reward_reading(vision, rewards, mailbox, request):
     if kind is None and names and all(kinds) and len(set(kinds)) == 1:
         kind = kinds[0]
     return {"kind": kind, "prompt": prompt, "names": names, "candidates": candidates, "counters": counters}
+
+
+def exchange_fields(dialog_items, p_items):
+    """交換確認对话框的文字 → 商品名称的文字与交换前、后的 P 点数；不是该对话框时为 None。"""
+    title = next((item for item in dialog_items if "交換確認" in item["text"]), None)
+    if title is None:
+        return None
+    anchor = next((item for item in dialog_items if "交換しますか" in item["text"]), title)
+    below = anchor["box"][1] + anchor["box"][3]
+    names = sorted(
+        (item for item in dialog_items if 190 <= item["box"][0] <= 230 and item["box"][1] > below and item["confidence"] >= 0.6),
+        key=lambda item: item["box"][1],
+    )
+    numbers = [int(value) for item in sorted(p_items, key=lambda item: item["box"][0]) if item["confidence"] >= 0.6 for value in re.findall(r"\d+", item["text"])]
+    return {"name": names[0] if names else None, "before": numbers[0] if len(numbers) >= 2 else None, "after": numbers[1] if len(numbers) >= 2 else None}
+
+
+def consult_reading(vision, rewards, mailbox, request):
+    """相谈：P 点数与画面标签；交換確認对话框另有商品名称（查库，读不到为 None）、种类与交换前后的 P 点数。"""
+    from utils.image_io import read_image
+    from produce.analysis import normalized_image
+
+    array = normalized_image(read_image(mailbox / request["frame"]))
+    label = "".join(item["text"] for item in texts(vision, array, SCREEN_LABEL_ROI) if item["confidence"] >= 0.6)
+    fields = {"p": first_number(texts(vision, array, P_COUNTER_ROI)), "label": label}
+    dialog = exchange_fields(texts(vision, array, EXCHANGE_DIALOG_ROI), texts(vision, array, EXCHANGE_P_ROI))
+    if dialog is not None:
+        name, kind = offer_name(rewards.match_tokens([dialog["name"]]) if dialog["name"] else {})
+        fields["exchange"] = {"name": name, "kind": kind, "before": dialog["before"], "after": dialog["after"]}
+    return fields
 
 
 def week_fields(counter_items, bonus_items):
@@ -244,8 +279,7 @@ class Reader:
             elif request["kind"] == "customize":
                 row["customize"] = customize_reading(self.vision, self.catalog, self.mailbox, request)
             elif request["kind"] == "consult":
-                array = normalized_image(read_image(self.mailbox / request["frame"]))
-                row["consult"] = {"p": first_number(texts(self.vision, array, P_COUNTER_ROI))}
+                row["consult"] = consult_reading(self.vision, self.rewards, self.mailbox, request)
         except Exception as exc:
             row["error"] = str(exc)
         return row

@@ -22,6 +22,7 @@ from ghl_readings import (
     week_fields,
     reward_fields,
     completed_ids,
+    exchange_fields,
     read_with_retry,
     selected_option,
     customize_fields,
@@ -128,6 +129,24 @@ class SelectedOptionTest(unittest.TestCase):
         image = np.full((1280, 720, 3), (200, 210, 220), dtype=np.uint8)
         image[803:902, OPTION_LEFT[0] : OPTION_LEFT[0] + OPTION_WIDTH] = self.ORANGE
         self.assertIsNone(selected_option(image))
+
+
+class ExchangeFieldsTest(unittest.TestCase):
+    def test_dialog_name_and_p(self):
+        # 对话框随商品说明向上伸展：名称取提示语下方、图标右侧的第一行；P 点数为交换前、后。
+        dialog = [
+            token("交換確認", [51, 451, 136, 37]),
+            token("Pポイントを使用して交換しますか?", [159, 539, 395, 24]),
+            token("やる気消費5", [243, 659, 148, 28]),
+            token("私が最強!", [203, 611, 141, 32], 0.97),
+            token("昇", [201, 802, 31, 31]),
+        ]
+        p_line = [token("193", [320, 1005, 50, 30]), token("P", [100, 1000, 40, 40]), token("→", [400, 1005, 20, 30]), token("93", [470, 1005, 40, 30])]
+        fields = exchange_fields(dialog, p_line)
+        self.assertEqual((fields["name"]["text"], fields["before"], fields["after"]), ("私が最強!", 193, 93))
+
+    def test_not_a_dialog(self):
+        self.assertIsNone(exchange_fields([token("Pポイントと交換するものを選んでください", [120, 300, 470, 30])], []))
 
 
 class FollowTest(unittest.TestCase):
