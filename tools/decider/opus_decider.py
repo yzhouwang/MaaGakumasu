@@ -12,9 +12,17 @@
 把它对每个请求的选择写入信箱的 ghl/answers.jsonl。本决策者对范围内的请求先等 GHL 的选择（--ghl-wait 秒），
 采用决策模型在本请求候选中的最优项；GHL 跳过、超时或没有可执行的候选时照常问 LLM（--ghl-only 时回答 fallback）。
 课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。
+
+Agent 只等 config/decider.json 的 timeout_s 秒（--agent-timeout 可覆盖）。Agent 已放弃的请求（consumed/ 中有超时或停止的记录，
+或已超过该时间）不再作答，只记一行日志：否则决策者中断或重启后，积压的旧请求各要等 GHL、问模型，正在等待的请求也会超时。
+GHL 的等待从请求提出时算起，模型调用不超过 Agent 剩余的等待时间（留出余量），答复不会在 Agent 放弃之后才到。
+
+模型的会话与备注不知道 GHL 和 fallback 作出的决策：下次问模型时，提示中附上自模型上次作答以来的这些决策
+（周、奖励与职业课等各一行，战斗每场一行：行动数与使用的饮料）；决策者重启后从 decisions.jsonl 恢复。
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -25,6 +33,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent")]
+CONFIG_PATH = ROOT / "config" / "decider.json"
+
+# 答复至少在 Agent 放弃前这么多秒写入；剩余时间不足 MIN_MODEL_S 秒时不再问模型，直接回答 fallback。
+AGENT_MARGIN_S = 5
+MIN_MODEL_S = 10
+# 提示中的决策摘要（Decider.handoff_text）最多保留的行数与每行的字数。
+HANDOFF_LINES = 30
+HANDOFF_LINE_CHARS = 160
+# GHL 答复的理由为「GHL <策略>: <选项说明>」（见 ghl_choice），摘要只取选项说明；战斗中饮料的选项说明为「use drink <名称>」。
+GHL_REASON_PREFIX = re.compile(r"^GHL [^:]*: ")
+GHL_DRINK = re.compile(r"use drink ([^;]+)")
 
 ANSWER_SCHEMA = {
     "type": "object",
@@ -114,6 +133,28 @@ def write_atomic(path: Path, value: dict):
     os.replace(temporary, path)
 
 
+def agent_timeout(path: Path = CONFIG_PATH) -> float:
+    """Agent 等待答复的秒数：config/decider.json 的 timeout_s；文件或字段缺失时与 agent/produce/decider.py 一致取 600。"""
+    try:
+        return float(json.loads(path.read_text(encoding="utf-8-sig")).get("timeout_s", 600))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 600.0
+
+
+def created_at(request: dict, path: Path) -> float:
+    """请求提出的时间（epoch 秒）；没有 created_at 的旧请求取文件的修改时间。"""
+    try:
+        return float(request.get("created_at") or path.stat().st_mtime)
+    except (OSError, TypeError, ValueError):
+        return time.time()
+
+
+def clip(text: str, limit: int) -> str:
+    """压成一行，超过 limit 个字符时截断。"""
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 class BattleReader:
     """复用采集分支的离线识别：手牌名称/库效果与战斗 HUD。"""
 
@@ -169,10 +210,49 @@ class Decider:
             self.system_prompt += "\n\n" + Path(extra).read_text(encoding="utf-8")
         if args.context:
             self.system_prompt += f"\n\nThis produce: {args.context}"
+        self.agent_timeout = agent_timeout() if args.agent_timeout is None else args.agent_timeout
+        # Agent 已放弃、不再作答的请求（文件名），每个只记一次日志
+        self.skipped = set()
+        # 模型上次作答以来 GHL 与 fallback 的决策（见 note_handoff），以及超出行数上限而省略的决策数
+        self.handoff, self.handoff_omitted = [], 0
+        self.load_handoff()
 
     def pending(self) -> list:
+        """未答复、Agent 仍在等待的请求（按 id 排序）。"""
         requests = sorted((self.mailbox / "requests").glob("*.json"))
-        return [path for path in requests if not (self.mailbox / "responses" / path.name).exists()]
+        return [
+            path
+            for path in requests
+            if path.name not in self.skipped and not (self.mailbox / "responses" / path.name).exists() and not self.skip_stale(path)
+        ]
+
+    def skip_stale(self, path: Path, request: dict | None = None) -> bool:
+        """
+        Agent 已不再等待的请求不作答，记一行日志后返回 True：consumed/ 中已有记录（超时或停止），或已超过 Agent 的等待时间。
+
+        否则决策者中断或重启后，积压的旧请求各要等 GHL、问模型，Agent 正在等待的请求也会超时。跳过的请求不写入
+        decisions.jsonl：其中每行对应一个写出的答复，读取方把 response.choice 当作决策者的答复；Agent 实际的操作见 consumed/。
+        """
+        if request is None:
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                request = {}
+        consumed = self.mailbox / "consumed" / path.name
+        if consumed.exists():
+            try:
+                source = json.loads(consumed.read_text(encoding="utf-8")).get("source")
+            except (OSError, ValueError, AttributeError):
+                source = None
+            why = f"Agent 已放弃等待（consumed: {source or '?'}）"
+        else:
+            age = time.time() - created_at(request, path)
+            if age <= self.agent_timeout:
+                return False
+            why = f"Agent 只等 {self.agent_timeout:.0f} 秒，请求已提出 {age:.0f} 秒"
+        self.skipped.add(path.name)
+        print(f"[{path.stem}] {request.get('kind', '?')} 跳过：{why}", flush=True)
+        return True
 
     def prompt_for(self, request: dict, reading: dict) -> str:
         lines = [f"Decision kind: {request['kind']}", f"Screenshot: {request['frame']}"]
@@ -199,9 +279,73 @@ class Decider:
         lines.append(f"Fallback (old rule-based choice): {request.get('fallback')}")
         if self.notes:
             lines.append("Your notes so far: " + " | ".join(self.notes[-20:]))
+        handoff = self.handoff_text()
+        if handoff:
+            lines.append(handoff)
         return "\n".join(lines)
 
-    def call_model(self, key: str, prompt: str) -> dict:
+    def note_handoff(self, request: dict, response: dict):
+        """记下模型以外（GHL、fallback）的决策，下次问模型时附在提示中；模型作答后清空。"""
+        source = response.get("source")
+        if source == "model":
+            self.handoff, self.handoff_omitted = [], 0
+            return
+        who = "GHL" if source == "ghl" else str(source)
+        choice = response.get("choice")
+        reason = response.get("reason") or ""
+        if request.get("kind") == "battle":
+            # 战斗每场一行：各来源的行动数与使用的饮料（GHL 的选项说明中有饮料名称）
+            battle = (request.get("context") or {}).get("battle_id") or "?"
+            if not self.handoff or self.handoff[-1].get("battle") != battle:
+                self.handoff.append({"battle": battle, "sources": {}, "drinks": []})
+            entry = self.handoff[-1]
+            entry["sources"][who] = entry["sources"].get(who, 0) + 1
+            if str(choice).startswith("drink_"):
+                drink = GHL_DRINK.search(reason) if source == "ghl" else None
+                entry["drinks"].append(drink.group(1).strip() if drink else choice)
+        else:
+            if source == "ghl":
+                detail = GHL_REASON_PREFIX.sub("", reason)
+            else:
+                label = next((item.get("label", "") for item in request.get("candidates") or [] if item.get("id") == choice), "")
+                detail = "; ".join(text for text in (label, reason) if text)
+            line = f"{request.get('kind')}: {choice or 'none'} by {who}"
+            self.handoff.append({"line": f"{line} ({detail})" if detail else line})
+        while len(self.handoff) > HANDOFF_LINES:
+            dropped = self.handoff.pop(0)
+            self.handoff_omitted += sum(dropped["sources"].values()) if "battle" in dropped else 1
+
+    def handoff_text(self) -> str:
+        """提示中的决策摘要：模型上次作答以来 GHL 与 fallback 的决策，周、奖励与职业课等各一行，战斗每场一行；没有时为空。"""
+        if not self.handoff:
+            return ""
+        lines = ["Decided without you since your last answer, oldest first (GHL: GHL's decider model; fallback: the old rule-based choice):"]
+        if self.handoff_omitted:
+            lines.append(f"- ({self.handoff_omitted} earlier decisions omitted)")
+        for entry in self.handoff:
+            if "battle" in entry:
+                actions = ", ".join(f"{who} {count}" for who, count in entry["sources"].items())
+                drinks = ("drinks used: " + ", ".join(entry["drinks"])) if entry["drinks"] else "no drinks used"
+                line = f"battle {entry['battle']}: {sum(entry['sources'].values())} actions ({actions}); {drinks}"
+            else:
+                line = entry["line"]
+            lines.append("- " + clip(line, HANDOFF_LINE_CHARS))
+        return "\n".join(lines)
+
+    def load_handoff(self):
+        """从决策日志恢复决策摘要，决策者重启后不丢失；只读以换行结尾的行。"""
+        try:
+            text = (self.mailbox / "decisions.jsonl").read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            return
+        for line in text.split("\n")[:-1]:
+            try:
+                row = json.loads(line)
+                self.note_handoff(row["request"], row["response"])
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+
+    def call_model(self, key: str, prompt: str, timeout: float) -> dict:
         session = self.sessions.get(key)
         command = ["claude", "-p", prompt, "--model", self.args.model, "--output-format", "json", "--json-schema", json.dumps(ANSWER_SCHEMA)]
         command += ["--tools", "Read", "--strict-mcp-config", "--setting-sources", ""]
@@ -215,7 +359,11 @@ class Decider:
             self.sessions[key] = session
             command += ["--session-id", session["id"], "--system-prompt", self.system_prompt]
         started = time.time()
-        completed = subprocess.run(command, cwd=self.mailbox, capture_output=True, text=True, timeout=self.args.call_timeout)
+        try:
+            completed = subprocess.run(command, cwd=self.mailbox, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # 超时异常的说明含整条命令（提示词与系统提示），答复与日志中只记时限
+            raise RuntimeError(f"claude did not answer within {timeout:.0f} s") from None
         output = json.loads(completed.stdout or "{}")
         if output.get("is_error") or completed.returncode != 0:
             raise RuntimeError(f"claude failed ({completed.returncode}): {str(output.get('result') or completed.stderr)[:300]}")
@@ -231,29 +379,35 @@ class Decider:
         }
         return answer
 
-    def ghl_answer(self, request: dict):
-        """等 GHL 实况桥对该请求的选择（至多 --ghl-wait 秒），返回 (答复, 未采用的原因)。"""
+    def ghl_answer(self, request: dict, until: float):
+        """等 GHL 实况桥对该请求的选择，至多等到 until（请求提出后 --ghl-wait 秒，且不晚于 Agent 放弃），返回 (答复, 未采用的原因)。"""
         if request["kind"] not in ("battle", "week", "reward", "class_option"):
             return None, f"kind {request['kind']}: GHL does not decide it"
-        deadline = time.time() + self.args.ghl_wait
         while True:
             answer = read_ghl_answers(self.mailbox / "ghl" / "answers.jsonl").get(request["id"])
             if answer:
                 return ghl_choice(answer, request, self.ghl_scope, self.args.ghl_policy, self.args.ghl_lesson_drinks)
-            if time.time() >= deadline:
-                return None, f"no GHL answer within {self.args.ghl_wait:.0f} s"
+            if time.time() >= until:
+                return None, f"no GHL answer within {self.args.ghl_wait:.0f} s of the request"
             time.sleep(0.2)
 
     def handle(self, path: Path):
         request = json.loads(path.read_text(encoding="utf-8"))
+        # 处理前一个请求期间，本请求可能已被 Agent 放弃
+        if self.skip_stale(path, request):
+            return
         ids = [item["id"] for item in request["candidates"]]
+        created = created_at(request, path)
+        # Agent 等到请求提出后 agent_timeout 秒为止：GHL 的等待与模型调用都在此之前结束，并留出余量让 Agent 读到答复
+        deadline = created + self.agent_timeout - AGENT_MARGIN_S
         reading = {}
         ghl_note = ""
         if self.args.ghl:
             started = time.time()
-            answer, why = self.ghl_answer(request)
+            answer, why = self.ghl_answer(request, min(created + self.args.ghl_wait, deadline))
             if answer:
-                response = {"id": request["id"], "choice": answer["choice"], "reason": answer["reason"], "source": "ghl", "meta": {"seconds": round(time.time() - started, 1)}}
+                meta = {"seconds": round(time.time() - started, 1)}
+                response = {"id": request["id"], "choice": answer["choice"], "reason": answer["reason"], "source": "ghl", "meta": meta}
                 self.finish(path, request, {}, "", response)
                 return
             ghl_note = why
@@ -270,13 +424,16 @@ class Decider:
                 reading = {"error": f"vision failed: {exc}"}
         prompt = self.prompt_for(request, reading)
         response = {"id": request["id"], "choice": request.get("fallback"), "reason": "", "source": "fallback"}
+        left = deadline - time.time()
         if self.args.dry_run:
             response["reason"] = "dry run"
+        elif left < MIN_MODEL_S:
+            response["reason"] = f"only {max(left, 0):.0f} s left before the agent stops waiting; the model was not asked"
         else:
             context = request.get("context", {})
             key = context.get("session_key") or (context.get("battle_id") if request["kind"] == "battle" else None) or "campaign"
             try:
-                answer = self.call_model(key, prompt)
+                answer = self.call_model(key, prompt, min(self.args.call_timeout, left))
                 if answer.get("choice") in ids:
                     response.update(choice=answer["choice"], reason=answer.get("reason", ""), source="model", meta=answer["_meta"])
                     for axis in ("x", "y"):
@@ -295,7 +452,7 @@ class Decider:
         self.finish(path, request, reading, prompt, response)
 
     def finish(self, path: Path, request: dict, reading: dict, prompt: str, response: dict):
-        """写入答复与决策日志。"""
+        """写入答复与决策日志，并记入交给模型的决策摘要。"""
         write_atomic(self.mailbox / "responses" / path.name, response)
         with open(self.mailbox / "decisions.jsonl", "a", encoding="utf-8") as log:
             log.write(
@@ -310,6 +467,7 @@ class Decider:
                 )
                 + "\n"
             )
+        self.note_handoff(request, response)
         meta = response.get("meta") or {}
         print(
             f"[{request['id']}] {request['kind']} -> {response['choice']} ({response['source']}, {meta.get('seconds', '-')}s) {response['reason'][:100]}",
@@ -319,7 +477,10 @@ class Decider:
     def run(self):
         (self.mailbox / "requests").mkdir(parents=True, exist_ok=True)
         (self.mailbox / "responses").mkdir(parents=True, exist_ok=True)
-        print(f"监视信箱 {self.mailbox}（模型 {self.args.model}{'，dry-run' if self.args.dry_run else ''}）", flush=True)
+        print(
+            f"监视信箱 {self.mailbox}（模型 {self.args.model}，Agent 等待 {self.agent_timeout:.0f} 秒{'，dry-run' if self.args.dry_run else ''}）",
+            flush=True,
+        )
         while True:
             for path in self.pending():
                 self.handle(path)
@@ -328,7 +489,7 @@ class Decider:
             time.sleep(0.3)
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mailbox", default="debug/decider/mailbox")
     parser.add_argument("--model", default="opus")
@@ -336,7 +497,8 @@ def main():
     parser.add_argument("--context", default="", help="本轮培育的简要说明（剧本、偶像、流派）")
     parser.add_argument("--extra-prompt", action="append", help="追加到系统提示词的文件，可重复")
     parser.add_argument("--session-turns", type=int, default=40, help="同一会话最多连续作答次数，超过后开新会话")
-    parser.add_argument("--call-timeout", type=int, default=420)
+    parser.add_argument("--call-timeout", type=int, default=420, help="单次模型调用的秒数上限；另不超过 Agent 剩余的等待时间")
+    parser.add_argument("--agent-timeout", type=float, default=None, help="Agent 等待答复的秒数，默认取 config/decider.json 的 timeout_s（缺省 600）")
     parser.add_argument("--no-vision", action="store_true", help="跳过手牌/HUD 离线识别")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true", help="处理当前积压的请求后退出")
@@ -346,11 +508,16 @@ def main():
     parser.add_argument("--ghl-wait", type=float, default=20, help="等 GHL 选择的秒数，超时则照常问 LLM")
     parser.add_argument("--ghl-lesson-drinks", action="store_true", help="允许课程中采用 GHL 选的饮料")
     parser.add_argument("--ghl-only", action="store_true", help="不问 LLM：GHL 不答的请求回答 fallback（联调用）")
-    args = parser.parse_args()
-    sys.stdout.reconfigure(encoding="utf-8")
+    args = parser.parse_args(argv)
     unknown = set(args.ghl_scope.split(",")) - set(GHL_SCOPES)
     if unknown:
         parser.error(f"unknown --ghl-scope: {', '.join(sorted(unknown))}")
+    return args
+
+
+def main():
+    args = parse_args()
+    sys.stdout.reconfigure(encoding="utf-8")
     Decider(args).run()
 
 

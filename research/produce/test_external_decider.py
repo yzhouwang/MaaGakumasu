@@ -1,26 +1,31 @@
 """外部决策接口回归：文件信箱的请求/答复/实际采用记录、坐标透传与超时，交互式画面循环的安全区域、结束与停止处理，
-以及外部决策者的 GHL 优先模式（tools/decider/opus_decider.py --ghl）。
+以及外部决策者（tools/decider/opus_decider.py）的 GHL 优先模式、Agent 已放弃请求的跳过与等待时限、交给模型的决策摘要。
 
-使用合成截图与替身决策者，不连接设备、不调用模型；临时信箱写入 debug/research/produce/tests/。
+使用合成截图与替身决策者，不连接设备、不调用模型（claude CLI 与模型调用均由替身代替）；临时信箱写入 debug/research/produce/tests/。
 需要安装 maafw（截图编码使用 MaaFramework）。
 """
 
+import io
+import os
 import sys
 import json
 import time
 import tempfile
 import unittest
 import threading
+import contextlib
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 import custom.action.produce as produce_actions
-from opus_decider import Decider, ghl_choice, read_ghl_answers
-from produce.decider import ExternalDecider, run_interactive, _next_session
+from opus_decider import HANDOFF_LINES, HANDOFF_LINE_CHARS, Decider, ghl_choice, parse_args, read_ghl_answers
+from produce.decider import ExternalDecider, _next_session, run_interactive
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
 
@@ -241,6 +246,47 @@ def ghl(task, probabilities, option_live, **extra):
     return {"id": "r1", "task": task, "options": options, "optionLive": option_live, "decider": {"key": max(probabilities, key=probabilities.get), "probabilities": probabilities}, **extra}
 
 
+def ghl_pick(task, *options):
+    """GHL 的答复：options 为 (候选, 选项说明)，决策模型选第一项。"""
+    keys = [str(index + 1) for index in range(len(options))]
+    probabilities = {key: 0.8 if key == "1" else 0.2 / (len(options) - 1) for key in keys}
+    texts = [[key, text] for key, (_, text) in zip(keys, options)]
+    return ghl(task, probabilities, {key: live for key, (live, _) in zip(keys, options)}, options=texts)
+
+
+def temporary_mailbox(test, prefix):
+    """debug/research/produce/tests/ 下的临时信箱，测试结束后删除。"""
+    root = ROOT / "debug/research/produce/tests"
+    root.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, dir=root)
+    test.addCleanup(temporary.cleanup)
+    mailbox = Path(temporary.name)
+    for sub in ("requests", "responses", "consumed", "ghl"):
+        (mailbox / sub).mkdir()
+    return mailbox
+
+
+def decider_args(mailbox, *flags):
+    """外部决策者的命令行参数：临时信箱，Agent 等待 600 秒（不读 config/decider.json）。"""
+    return parse_args(["--mailbox", str(mailbox), "--agent-timeout", "600", *flags])
+
+
+def write_request(mailbox, request_id, kind, candidates, fallback, age=0.0, **extra):
+    """写入 age 秒前提出的请求；age 为 None 时没有 created_at（旧请求）。"""
+    request = {"id": request_id, "kind": kind, "frame": f"frames/{request_id}.png", "candidates": candidates, "fallback": fallback, **extra}
+    if age is not None:
+        request["created_at"] = time.time() - age
+    path = mailbox / "requests" / f"{request_id}.json"
+    path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def summary_lines(text):
+    """提示中「Decided without you」一段的各行，没有时为空。"""
+    _, _, tail = text.partition("Decided without you since your last answer")
+    return tail.splitlines()[1:]
+
+
 class GhlFirstTest(unittest.TestCase):
     battle = {"id": "r1", "kind": "battle", "candidates": [{"id": "card_0"}, {"id": "card_1"}, {"id": "drink_0"}, {"id": "skip"}], "fallback": "card_0"}
     scope = {"exam", "lesson", "week", "offer"}
@@ -273,30 +319,177 @@ class GhlFirstTest(unittest.TestCase):
         self.assertEqual(ghl_choice(answer, request, self.scope, policy="reference")[0]["choice"], "Vo")
 
     def test_answers_file_and_ghl_only_response(self):
-        root = ROOT / "debug/research/produce/tests"
-        root.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(prefix="ghl_first_", dir=root)
-        self.addCleanup(temporary.cleanup)
-        mailbox = Path(temporary.name)
-        for sub in ("requests", "responses", "ghl"):
-            (mailbox / sub).mkdir()
-        answers = [ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_0"}, id="a"), ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_1"}, id="b")]
+        mailbox = temporary_mailbox(self, "ghl_first_")
+        answers =[ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_0"}, id="a"), ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_1"}, id="b")]
         # 正在写入的最后一行不读。
         (mailbox / "ghl" / "answers.jsonl").write_text("".join(json.dumps(a) + "\n" for a in answers) + '{"id": "c", "ta', encoding="utf-8")
         self.assertEqual(sorted(read_ghl_answers(mailbox / "ghl" / "answers.jsonl")), ["a", "b"])
         for request_id in ("b", "z"):
             (mailbox / "requests" / f"{request_id}.json").write_text(json.dumps({**self.battle, "id": request_id, "frame": "frames/x.png"}), encoding="utf-8")
-        args = SimpleNamespace(
-            mailbox=str(mailbox), extra_prompt=None, context="", ghl=True, ghl_scope="exam,lesson,week,offer", ghl_policy="decider",
-            ghl_wait=0.2, ghl_lesson_drinks=False, ghl_only=True, dry_run=False, no_vision=True,
-        )
-        decider = Decider(args)
+        decider = Decider(decider_args(mailbox, "--ghl", "--ghl-only", "--ghl-wait", "0.2", "--no-vision"))
         for request_id in ("b", "z"):
             decider.handle(mailbox / "requests" / f"{request_id}.json")
         responses = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (mailbox / "responses").glob("*.json")}
         self.assertEqual((responses["b"]["choice"], responses["b"]["source"]), ("card_1", "ghl"))
         # GHL 没有答复：--ghl-only 时回答 fallback。
         self.assertEqual((responses["z"]["choice"], responses["z"]["source"]), ("card_0", "fallback"))
+
+
+class DeciderDeadlineTest(unittest.TestCase):
+    """Agent 已放弃的请求不再作答；GHL 的等待从请求提出时算起；模型调用不超过 Agent 剩余的等待时间。"""
+
+    candidates = [{"id": "Vo", "label": "Vo"}, {"id": "rest", "label": "休息"}]
+
+    def setUp(self):
+        self.mailbox = temporary_mailbox(self, "decider_deadline_")
+
+    def request(self, request_id, age=0.0):
+        return write_request(self.mailbox, request_id, "week", self.candidates, "rest", age)
+
+    def handle(self, decider, path):
+        with contextlib.redirect_stdout(io.StringIO()):
+            decider.handle(path)
+
+    def responses(self):
+        return {path.stem: json.loads(path.read_text(encoding="utf-8")) for path in (self.mailbox / "responses").glob("*.json")}
+
+    def test_pending_skips_requests_the_agent_gave_up(self):
+        decider = Decider(decider_args(self.mailbox, "--agent-timeout", "60"))
+        self.request("a")
+        (self.mailbox / "consumed" / "a.json").write_text(json.dumps({"id": "a", "choice": None, "source": "timeout"}), encoding="utf-8")
+        self.request("b", age=61)
+        self.request("c", age=10)
+        self.request("d")
+        (self.mailbox / "responses" / "d.json").write_text("{}", encoding="utf-8")
+        # 没有 created_at 的旧请求按文件修改时间计。
+        old = time.time() - 120
+        os.utime(self.request("e", age=None), (old, old))
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual([path.stem for path in decider.pending()], ["c"])
+            self.assertEqual([path.stem for path in decider.pending()], ["c"])
+        # 每个跳过的请求只记一行日志，不写答复，也不写决策日志。
+        lines = output.getvalue().splitlines()
+        self.assertEqual([line.split("]")[0][1:] for line in lines], ["a", "b", "e"])
+        self.assertIn("consumed: timeout", lines[0])
+        self.assertEqual(sorted(self.responses()), ["d"])
+        self.assertFalse((self.mailbox / "decisions.jsonl").exists())
+
+    def test_ghl_wait_counts_from_the_request(self):
+        decider = Decider(decider_args(self.mailbox, "--ghl", "--ghl-only", "--ghl-wait", "1"))
+        answer = ghl("ghl/week", {"1": 0.9, "2": 0.1}, {"1": "Vo", "2": "rest"}, id="answered")
+        (self.mailbox / "ghl" / "answers.jsonl").write_text(json.dumps(answer) + "\n", encoding="utf-8")
+        seconds = {}
+        for request_id, age in (("late", 5), ("answered", 30), ("fresh", 0)):
+            path = self.request(request_id, age)
+            started = time.time()
+            self.handle(decider, path)
+            seconds[request_id] = time.time() - started
+        responses = self.responses()
+        # 提出 5 秒后才处理：GHL 的等待（1 秒）已过，读一次 answers.jsonl 就回答。
+        self.assertLess(seconds["late"], 0.5)
+        self.assertEqual((responses["late"]["choice"], responses["late"]["source"]), ("rest", "fallback"))
+        self.assertIn("no GHL answer within 1 s of the request", responses["late"]["reason"])
+        # GHL 已作答的请求照常采用。
+        self.assertEqual((responses["answered"]["choice"], responses["answered"]["source"]), ("Vo", "ghl"))
+        # 刚提出的请求等满 1 秒。
+        self.assertGreaterEqual(seconds["fresh"], 0.9)
+
+    def test_model_call_is_capped_by_the_agent_wait(self):
+        decider = Decider(decider_args(self.mailbox, "--agent-timeout", "100", "--call-timeout", "420"))
+        timeouts = []
+
+        def run(command, **kwargs):
+            # 替身 claude CLI：记下时限，第二次调用超时
+            timeouts.append(kwargs["timeout"])
+            if len(timeouts) == 2:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"structured_output": {"choice": "Vo", "reason": "r"}}), stderr="")
+
+        with mock.patch.object(subprocess, "run", run):
+            for request_id, age in (("a", 40), ("b", 40), ("c", 92)):
+                self.handle(decider, self.request(request_id, age))
+        responses = self.responses()
+        # 提出 40 秒后：Agent 还等 60 秒，模型调用以 55 秒为限（留 5 秒余量）。
+        self.assertEqual(len(timeouts), 2)
+        self.assertTrue(50 < timeouts[0] <= 55, timeouts[0])
+        self.assertEqual((responses["a"]["choice"], responses["a"]["source"]), ("Vo", "model"))
+        # 调用超时：回答 fallback，理由只记时限，不含整条命令。
+        self.assertEqual((responses["b"]["choice"], responses["b"]["source"]), ("rest", "fallback"))
+        self.assertRegex(responses["b"]["reason"], r"^decider error: claude did not answer within 5\d s$")
+        # 只剩 3 秒：不问模型，直接回答 fallback。
+        self.assertEqual((responses["c"]["choice"], responses["c"]["source"]), ("rest", "fallback"))
+        self.assertIn("the model was not asked", responses["c"]["reason"])
+
+
+class HandoffTest(unittest.TestCase):
+    """GHL 与 fallback 的决策在下次问模型时附在提示中：模型作答后清空，决策者重启后从决策日志恢复。"""
+
+    week = [{"id": "Vi", "label": "Vi", "sp": True}, {"id": "rest", "label": "休息"}]
+    battle = [{"id": "card_0", "label": "出牌"}, {"id": "drink_0", "label": "使用饮料"}, {"id": "skip", "label": "跳过回合"}]
+    offers = [{"id": "reward_1", "label": "第 1 个奖励"}, {"id": "reward_2", "label": "第 2 个奖励"}]
+    classes = [{"id": "Vo", "label": "Vo 选项"}, {"id": "Vi", "label": "Vi 选项"}]
+    consult = [{"id": "tap", "label": "点击画面中的一个位置"}, {"id": "wait", "label": "等待画面变化"}, {"id": "done", "label": "本画面的操作已完成"}]
+
+    def setUp(self):
+        self.mailbox = temporary_mailbox(self, "decider_handoff_")
+        self.prompts, self.answers = [], []
+
+    def decider(self):
+        """决策者；模型调用由替身代替：记下提示，按顺序取预设答复（默认 wait）。"""
+        decider = Decider(decider_args(self.mailbox, "--ghl", "--ghl-wait", "0", "--no-vision"))
+
+        def call_model(key, prompt, timeout):
+            self.prompts.append(prompt)
+            return {**(self.answers.pop(0) if self.answers else {"choice": "wait", "reason": "r"}), "_meta": {}}
+
+        decider.call_model = call_model
+        return decider
+
+    def ask(self, decider, request_id, kind, candidates, fallback, answer=None, **extra):
+        """提出请求并处理；answer 为 GHL 对它的答复（先写入 ghl/answers.jsonl）。"""
+        if answer:
+            with open(self.mailbox / "ghl" / "answers.jsonl", "a", encoding="utf-8") as file:
+                file.write(json.dumps({**answer, "id": request_id}, ensure_ascii=False) + "\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            decider.handle(write_request(self.mailbox, request_id, kind, candidates, fallback, **extra))
+
+    def test_summary_reaches_the_next_model_prompt(self):
+        decider = self.decider()
+        self.ask(decider, "001", "week", self.week, "rest", ghl_pick("ghl/week", ("Vi", "Legend lesson Vi (SP): 8 turns, clear 85"), ("rest", "rest")))
+        for request_id, option in (("002", ("card_0", "play 先へ進む姿+")), ("003", ("drink_0", "use drink ミックススムージー"))):
+            answer = ghl_pick("ghl/battle-exam", option, ("skip", "end the turn without playing"))
+            self.ask(decider, request_id, "battle", self.battle, "card_0", answer, context={"battle_id": "b1"})
+        self.ask(decider, "004", "reward", self.offers, "reward_1", ghl_pick("ghl/card-offer", ("reward_2", "take 輝くキミへ+"), ("reward_1", "take 笑顔の基本")))
+        self.assertEqual(self.prompts, [])
+        # 决策者重启：摘要从决策日志恢复，模型下次被问（相谈）时看到这些决策。
+        decider = self.decider()
+        self.ask(decider, "005", "consult", self.consult, "wait", context={"session_key": "consult-1"})
+        expected = [
+            "- week: Vi by GHL (Legend lesson Vi (SP): 8 turns, clear 85)",
+            "- battle b1: 2 actions (GHL 2); drinks used: ミックススムージー",
+            "- reward: reward_2 by GHL (take 輝くキミへ+)",
+        ]
+        self.assertEqual(summary_lines(self.prompts[0]), expected)
+        # 模型作答后清空：此后只列新的决策，包括模型答复无效时的 fallback。
+        self.answers = [{"choice": "zzz", "reason": "?"}]
+        self.ask(decider, "006", "consult", self.consult, "wait", context={"session_key": "consult-1"})
+        self.assertEqual(summary_lines(self.prompts[1]), [])
+        self.ask(decider, "007", "class_option", self.classes, "Vo", ghl_pick("ghl/week", ("上课:Vi", "class main (Vi): +150 Vi"), ("上课:Vo", "class main (Vo)")))
+        self.ask(decider, "008", "consult", self.consult, "wait", context={"session_key": "consult-1"})
+        expected = ["- consult: wait by fallback (等待画面变化; model answered unknown id 'zzz')", "- class_option: Vi by GHL (class main (Vi): +150 Vi)"]
+        self.assertEqual(summary_lines(self.prompts[2]), expected)
+        self.ask(decider, "009", "consult", self.consult, "wait", context={"session_key": "consult-1"})
+        self.assertEqual(summary_lines(self.prompts[3]), [])
+
+    def test_summary_is_bounded(self):
+        decider = self.decider()
+        request = {"id": "x", "kind": "week", "candidates": self.week}
+        for _ in range(HANDOFF_LINES + 5):
+            decider.note_handoff(request, {"choice": "Vi", "reason": "GHL decider p=0.80: " + "x" * 400, "source": "ghl"})
+        lines = summary_lines(decider.handoff_text())
+        self.assertEqual(len(lines), HANDOFF_LINES + 1)
+        self.assertEqual(lines[0], "- (5 earlier decisions omitted)")
+        self.assertTrue(all(len(line) == len("- ") + HANDOFF_LINE_CHARS for line in lines[1:]))
 
 
 if __name__ == "__main__":
