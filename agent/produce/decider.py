@@ -28,6 +28,19 @@ CONFIG_PATH = ROOT / "config" / "decider.json"
 POLL_INTERVAL = 0.2
 
 
+def _next_session(mailbox: Path) -> str:
+    """会话号取当前时间；不晚于信箱中已有请求的会话号时（例如时钟回拨后重新载入）取其后一秒，
+    使请求 id 的顺序始终是提出的顺序（只读信箱的旁观者按 id 排序）。"""
+    now = time.strftime("%Y%m%d-%H%M%S")
+    try:
+        last = max((path.name[:15] for path in (mailbox / "requests").glob("*.json")), default="")
+        if now > last:
+            return now
+        return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.mktime(time.strptime(last, "%Y%m%d-%H%M%S")) + 1))
+    except (OSError, ValueError):
+        return now
+
+
 def _write_atomic(path: Path, data: bytes):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -44,7 +57,7 @@ class ExternalDecider:
         self.kinds = set(config.get("kinds", ["battle", "week"]))
         self.timeout = float(config.get("timeout_s", 600))
         self.mailbox = ROOT / config.get("mailbox", "debug/decider/mailbox")
-        self.session = time.strftime("%Y%m%d-%H%M%S")
+        self.session = _next_session(self.mailbox)
 
     @classmethod
     def load(cls):

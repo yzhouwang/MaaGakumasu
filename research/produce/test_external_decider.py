@@ -18,7 +18,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent")]
 import custom.action.produce as produce_actions
-from produce.decider import ExternalDecider, run_interactive
+from produce.decider import ExternalDecider, run_interactive, _next_session
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
 
@@ -216,6 +216,14 @@ class MailboxTest(unittest.TestCase):
         self.assertIsNone(self.decider.ask("battle", IMAGE, self.candidates))
         # 答复不在候选中：Agent 回退原有逻辑，记录为 invalid。
         self.assertEqual(self.consumed(), [(None, "invalid")])
+
+    def test_session_ids_keep_the_request_order(self):
+        # 时钟回拨后重新载入：会话号仍晚于信箱中已有的请求。
+        (self.mailbox / "requests").mkdir(exist_ok=True)
+        (self.mailbox / "requests" / "20991231-235959-00007.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(_next_session(self.mailbox), "21000101-000000")
+        session = ExternalDecider({"kinds": ["battle"], "mailbox": str(self.mailbox.relative_to(ROOT))}).session
+        self.assertGreater(session, "20991231-235959")
 
     def test_timeout_and_stopping(self):
         self.decider.timeout = 0.3
