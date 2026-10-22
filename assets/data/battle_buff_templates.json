@@ -1096,6 +1096,60 @@
 				"radius": 33
 			},
 			"template_sha256": "4f66dcb2d19bd02fb50d46cb690fd3c11df423e6d7acd84f76cb078cc2138a63"
+		},
+		{
+			"id": "drink_0014",
+			"drink_id": 14,
+			"name": "センブリソーダ",
+			"template": "produce/drinks/drink_0014.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-22-ghl",
+				"frame_sha256": "f523fd9258a119f99a107cbfe5e9721f036a33b82d495c7125792035c65ebb81",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-22",
+				"verification": {
+					"method": "elimination_and_drink_effect_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at drink slot 0 of the week-4 lesson's first frame (request 00012). The drinks held were the start-bonus pick センブリソーダ (request 00001) and the week-3 supply pick ルイボスティー (request 00009); slot 1 reads ルイボスティー by its template, so slot 0 is センブリソーダ by elimination. Cross-checks: the drink-keep dialog after the week-7 lesson (request 00034) lists the first held drink with センブリソーダ's effect text (score +10% for 5 turns, draw 2); using this slot in the midterm (request 00116) raised the score buff by 10% for 5 turns and showed this icon as a 5-turn HUD effect.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "232494cc3eea754b33d63e1ded0f4731867938aabcad9a7aef907c66b7b3ddac"
+		},
+		{
+			"id": "drink_0012",
+			"drink_id": 12,
+			"name": "ブーストエキス",
+			"template": "produce/drinks/drink_0012.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-22-ghl",
+				"frame_sha256": "b4a4e49830d928decffc840e0ca8881d7263ba3730aedd30908ee5609b536f84",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-22",
+				"verification": {
+					"method": "elimination_and_drink_effect_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring) at drink slot 2 of the week-7 lesson's first frame (request 00025); the drink was gained between the week-4 and week-7 lessons without a drink decision. Slots 0 and 1 carry the week-4 icons (センブリソーダ, ルイボスティー), and the drink-keep dialog after this lesson (request 00034) lists the held drinks in slot order, the third with ブーストエキス's effect text (score +30% for 3 turns, 消費体力減少 3 turns). Cross-check: using the same icon at slot 0 in the final exam (request 00238) raised the score buff by 30% for 3 turns and added 消費体力減少 3 turns.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "f6cfe028939befd70df8bcfd30236092a4025163e57116758c86694c8470f674"
 		}
 	]
 }
