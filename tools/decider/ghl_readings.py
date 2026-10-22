@@ -9,7 +9,8 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
   各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
 - customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称与价格、选中的选项与其价格；
-- consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；交換確認对话框另读商品名称、种类与交换前后的 P 点数；
+- consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；交換確認对话框另读商品名称、种类与交换前后的 P 点数，
+  スキルカード強化、スキルカード削除对话框另读动作、卡牌名称（强化为强化前的卡牌）与前后的 P 点数；
 - 其余种类：种类与答复。
 
 用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
@@ -50,11 +51,16 @@ OPTION_LABEL_ROWS = (808, 60)
 OPTION_PRICE_ROWS = (866, 36)
 # 选项卡上下缘之外的两条横带：只有选中项的括号是橙色。
 SELECTION_BANDS = ((784, 800), (904, 919))
-# 相谈（商店）：左上角的画面标签（相談；卡牌强化、删除画面为「強化」「削除」）。交換確認对话框随商品说明的长短向上伸展，
-# 底部的「P 交换前 → 交换后」一行位置固定；商品名称是提示语「Pポイントを使用して交換しますか」下方、图标右侧的第一行。
+# 相谈（商店）：左上角的画面标签（相談；卡牌强化、删除画面为「強化」「削除」）。确认对话框随说明的长短向上伸展（强化对话框
+# 列出强化前、后两张卡，伸得最高），底部的「P 交换前 → 交换后」一行位置固定；名称是提示语「Pポイントを使用して…しますか」
+# 下方、图标右侧的第一行（强化对话框为强化前的卡牌）。
 SCREEN_LABEL_ROI = [0, 28, 182, 58]
-EXCHANGE_DIALOG_ROI = [20, 300, 680, 700]
+EXCHANGE_DIALOG_ROI = [20, 100, 680, 900]
 EXCHANGE_P_ROI = [80, 990, 560, 60]
+# 确认对话框的标题、提示语中的动词与动作：交換確認（交换商品）、スキルカード強化（强化卡牌）、スキルカード削除（删除卡牌）。
+SHOP_DIALOGS = (("交換確認", "交換", "buy"), ("スキルカード強化", "強化", "upgrade"), ("スキルカード削除", "削除", "remove"))
+# 标题在对话框左缘；卡牌说明从图标右侧（x ≥ 190）开始，其中的同样字样不算标题。
+DIALOG_TITLE_RIGHT = 190
 REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
 ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
 
@@ -108,22 +114,38 @@ def reward_reading(vision, rewards, mailbox, request):
 
 
 def exchange_fields(dialog_items, p_items):
-    """交換確認对话框的文字 → 商品名称的文字与交换前、后的 P 点数；不是该对话框时为 None。"""
-    title = next((item for item in dialog_items if "交換確認" in item["text"]), None)
-    if title is None:
+    """
+    相谈确认对话框的文字 → 动作（buy 交换商品、upgrade 强化卡牌、remove 删除卡牌）、名称的文字与交换前、后的 P 点数；
+    不是这些对话框时为 None。动作按提示语中的动词（「交換しますか」等），提示语读不到时按左缘的标题。
+    """
+    prompts = ((item, action) for _, verb, action in SHOP_DIALOGS for item in dialog_items if verb + "しますか" in item["text"])
+    left = [item for item in dialog_items if item["box"][0] < DIALOG_TITLE_RIGHT]
+    titles = ((item, action) for title, _, action in SHOP_DIALOGS for item in left if title in item["text"])
+    found = next(prompts, None) or next(titles, None)
+    if found is None:
         return None
-    anchor = next((item for item in dialog_items if "交換しますか" in item["text"]), title)
+    anchor, action = found
     below = anchor["box"][1] + anchor["box"][3]
+    # 强化对话框中强化后的卡牌在下方，取第一行即强化前的卡牌。
     names = sorted(
         (item for item in dialog_items if 190 <= item["box"][0] <= 230 and item["box"][1] > below and item["confidence"] >= 0.6),
         key=lambda item: item["box"][1],
     )
     numbers = [int(value) for item in sorted(p_items, key=lambda item: item["box"][0]) if item["confidence"] >= 0.6 for value in re.findall(r"\d+", item["text"])]
-    return {"name": names[0] if names else None, "before": numbers[0] if len(numbers) >= 2 else None, "after": numbers[1] if len(numbers) >= 2 else None}
+    return {
+        "action": action,
+        "name": names[0] if names else None,
+        "before": numbers[0] if len(numbers) >= 2 else None,
+        "after": numbers[1] if len(numbers) >= 2 else None,
+    }
 
 
 def consult_reading(vision, rewards, mailbox, request):
-    """相谈：P 点数与画面标签；交換確認对话框另有商品名称（查库，读不到为 None）、种类与交换前后的 P 点数。"""
+    """
+    相谈：P 点数与画面标签；交換確認对话框另有 exchange：商品名称（查库，读不到为 None）、种类与交换前后的 P 点数；
+    スキルカード強化、スキルカード削除对话框另有 service：动作（upgrade、remove）、卡牌名称（强化为强化前的卡牌，查库，
+    读不到或不是技能卡为 None）与前后的 P 点数。卡牌另记一栏，只认 exchange 的读取方不会把强化、删除当成购买。
+    """
     from utils.image_io import read_image
     from produce.analysis import normalized_image
 
@@ -131,9 +153,14 @@ def consult_reading(vision, rewards, mailbox, request):
     label = "".join(item["text"] for item in texts(vision, array, SCREEN_LABEL_ROI) if item["confidence"] >= 0.6)
     fields = {"p": first_number(texts(vision, array, P_COUNTER_ROI)), "label": label}
     dialog = exchange_fields(texts(vision, array, EXCHANGE_DIALOG_ROI), texts(vision, array, EXCHANGE_P_ROI))
-    if dialog is not None:
-        name, kind = offer_name(rewards.match_tokens([dialog["name"]]) if dialog["name"] else {})
+    if dialog is None:
+        return fields
+    name, kind = offer_name(rewards.match_tokens([dialog["name"]]) if dialog["name"] else {})
+    if dialog["action"] == "buy":
         fields["exchange"] = {"name": name, "kind": kind, "before": dialog["before"], "after": dialog["after"]}
+    else:
+        name = name if kind == "card" else None
+        fields["service"] = {"action": dialog["action"], "name": name, "before": dialog["before"], "after": dialog["after"]}
     return fields
 
 

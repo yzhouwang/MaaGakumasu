@@ -1,5 +1,5 @@
-"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览，
-以及实况读取的断行恢复与失败重试。
+"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览、
+相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除），以及实况读取的断行恢复与失败重试。
 
 使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。临时文件写入 debug/research/produce/tests/。
 """
@@ -17,11 +17,16 @@ from ghl_frame import LESSON_ICON, lesson_attribute
 from ghl_readings import (
     OPTION_LEFT,
     OPTION_WIDTH,
+    P_COUNTER_ROI,
+    EXCHANGE_P_ROI,
     SELECTION_BANDS,
+    SCREEN_LABEL_ROI,
+    EXCHANGE_DIALOG_ROI,
     offer_name,
     week_fields,
     completed_ids,
     reward_fields,
+    consult_reading,
     exchange_fields,
     read_with_retry,
     selected_option,
@@ -137,6 +142,28 @@ class SelectedOptionTest(unittest.TestCase):
         self.assertIsNone(selected_option(image))
 
 
+P_LINE = [
+    token("520", [320, 1005, 50, 30]),
+    token("P", [100, 1000, 40, 40]),
+    token("→", [400, 1005, 20, 30]),
+    token("420", [470, 1005, 50, 30]),
+]
+REMOVAL_DIALOG = [
+    token("強化確認", [63, 273, 87, 28]),
+    token("スキルカード削除", [58, 634, 257, 33]),
+    token("Pポイントを使用してスキルカードを削除しますか?", [75, 719, 563, 24]),
+    token("ファンサの基本", [206, 791, 205, 31]),
+    token("昇", [203, 876, 28, 28]),
+]
+UPGRADE_DIALOG = [
+    token("スキルカード強化", [56, 260, 259, 32]),
+    token("Pポイントを使用してスキルカードを強化しますか?", [75, 344, 562, 23]),
+    token("輝くキミへ", [204, 415, 148, 32], 0.96),
+    token("やる気消費4", [250, 465, 140, 26]),
+    token("輝くキミへ+", [204, 719, 168, 31], 0.92),
+]
+
+
 class ExchangeFieldsTest(unittest.TestCase):
     def test_dialog_name_and_p(self):
         # 对话框随商品说明向上伸展：名称取提示语下方、图标右侧的第一行；P 点数为交换前、后。
@@ -149,10 +176,94 @@ class ExchangeFieldsTest(unittest.TestCase):
         ]
         p_line = [token("193", [320, 1005, 50, 30]), token("P", [100, 1000, 40, 40]), token("→", [400, 1005, 20, 30]), token("93", [470, 1005, 40, 30])]
         fields = exchange_fields(dialog, p_line)
-        self.assertEqual((fields["name"]["text"], fields["before"], fields["after"]), ("私が最強!", 193, 93))
+        self.assertEqual((fields["action"], fields["name"]["text"], fields["before"], fields["after"]), ("buy", "私が最強!", 193, 93))
 
     def test_not_a_dialog(self):
         self.assertIsNone(exchange_fields([token("Pポイントと交換するものを選んでください", [120, 300, 470, 30])], []))
+        # 卡牌列表画面：上方卡牌详情的「強化確認」按钮不是对话框。
+        self.assertIsNone(exchange_fields([token("強化確認", [63, 273, 87, 28]), token("ファンサの基本", [193, 105, 205, 32])], []))
+
+    def test_removal_dialog(self):
+        fields = exchange_fields(REMOVAL_DIALOG, P_LINE)
+        self.assertEqual((fields["action"], fields["name"]["text"], fields["before"], fields["after"]), ("remove", "ファンサの基本", 520, 420))
+
+    def test_upgrade_dialog_names_the_card_before_the_upgrade(self):
+        fields = exchange_fields(UPGRADE_DIALOG, P_LINE)
+        self.assertEqual((fields["action"], fields["name"]["text"]), ("upgrade", "輝くキミへ"))
+
+    def test_without_the_prompt_the_title_at_the_left_edge_decides(self):
+        # 提示语读不到：按左缘的标题；卡牌说明里的同样字样（x ≥ 190）不算标题。
+        dialog = [item for item in REMOVAL_DIALOG if "しますか" not in item["text"]] + [token("スキルカード強化追加", [296, 840, 250, 27])]
+        fields = exchange_fields(dialog, P_LINE)
+        self.assertEqual((fields["action"], fields["name"]["text"]), ("remove", "ファンサの基本"))
+        self.assertIsNone(exchange_fields([token("スキルカード強化追加", [296, 840, 250, 27]), token("ファンサの基本", [206, 900, 205, 31])], P_LINE))
+
+
+class FakeVision:
+    """按 ROI 返回替身 OCR 文字。"""
+
+    def __init__(self, by_roi):
+        self.by_roi = {tuple(roi): items for roi, items in by_roi}
+
+    def _read_title(self, array, roi):
+        return self.by_roi.get(tuple(roi), [])
+
+
+class FakeRewards:
+    """名称查库：替身文字按表给出种类，「+」记为强化次数。"""
+
+    KINDS = {"ファンサの基本": "skill_card", "輝くキミへ": "skill_card", "初星水": "drink"}
+
+    def match_tokens(self, tokens):
+        text = tokens[0]["text"]
+        kind = self.KINDS.get(text.rstrip("+"))
+        if kind is None:
+            return {"status": "unknown"}
+        return {"status": "matched", "item_kind": kind, "database_name": text.rstrip("+"), "observed_plus_count": text.count("+")}
+
+
+class ConsultReadingTest(unittest.TestCase):
+    def setUp(self):
+        from utils.image_io import encode_png
+
+        root = ROOT / "debug/research/produce/tests"
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="consult_", dir=root)
+        self.addCleanup(temporary.cleanup)
+        self.mailbox = Path(temporary.name)
+        (self.mailbox / "frame.png").write_bytes(encode_png(np.zeros((1280, 720, 3), dtype=np.uint8)))
+
+    def read(self, label, dialog, p_line, counter=()):
+        vision = FakeVision(
+            [
+                (SCREEN_LABEL_ROI, [token(label, [59, 39, 63, 36])]),
+                (P_COUNTER_ROI, list(counter)),
+                (EXCHANGE_DIALOG_ROI, dialog),
+                (EXCHANGE_P_ROI, p_line),
+            ]
+        )
+        return consult_reading(vision, FakeRewards(), self.mailbox, {"frame": "frame.png"})
+
+    def test_card_dialogs_are_a_service_not_an_exchange(self):
+        # 只认 exchange 的读取方不会把强化、删除当成购买。
+        self.assertEqual(
+            self.read("削除", REMOVAL_DIALOG, P_LINE),
+            {"p": None, "label": "削除", "service": {"action": "remove", "name": "ファンサの基本", "before": 520, "after": 420}},
+        )
+        upgrade = self.read("強化", UPGRADE_DIALOG, P_LINE)["service"]
+        self.assertEqual(upgrade, {"action": "upgrade", "name": "輝くキミへ", "before": 520, "after": 420})
+
+    def test_exchange_unchanged(self):
+        dialog = [token("交換確認", [52, 595, 135, 38]), token("Pポイントを使用して交換しますか?", [159, 683, 395, 24]), token("初星水", [204, 755, 177, 31])]
+        exchange = {"name": "初星水", "kind": "drink", "before": 520, "after": 420}
+        self.assertEqual(self.read("", dialog, P_LINE), {"p": None, "label": "", "exchange": exchange})
+
+    def test_a_service_name_that_is_not_a_skill_card_is_not_read(self):
+        dialog = [item if item["text"] != "ファンサの基本" else token("初星水", item["box"]) for item in REMOVAL_DIALOG]
+        self.assertIsNone(self.read("削除", dialog, P_LINE)["service"]["name"])
+
+    def test_other_screens(self):
+        self.assertEqual(self.read("相談", [], [], [token("520", [372, 98, 50, 30])]), {"p": 520, "label": "相談"})
 
 
 class FollowTest(unittest.TestCase):
