@@ -7,7 +7,9 @@
 信箱布局（相对仓库根目录）：
 - requests/<id>.json：决策请求，含决策种类、候选项（id、说明、点击框）、原有逻辑的选择（fallback）与已读取的状态；
 - frames/<id>.png：请求对应的原始截图；
-- responses/<id>.json：决策者的答复 {"id": ..., "choice": <候选 id>, "reason": ...}。
+- responses/<id>.json：决策者的答复 {"id": ..., "choice": <候选 id>, "reason": ...}；
+- consumed/<id>.json：Agent 实际采用的结果 {"id", "choice": <采用的候选 id，回退原有逻辑时为 null>, "source": decider/invalid/timeout/stopped, "at"}。
+  答复可能在超时之后才到，或不在候选中；只读信箱的旁观者（例如 GHL 的实况桥）据此还原实际执行的操作。
 
 决策者只返回候选 id，点击仍由 Agent 按候选框执行；答复不在候选中时视为无效并回退。
 """
@@ -100,6 +102,7 @@ class ExternalDecider:
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             if stopping and stopping():
+                self._consumed(request_id, None, "stopped")
                 return None
             if response_path.exists():
                 try:
@@ -110,15 +113,26 @@ class ExternalDecider:
                 chosen = next((item for item in candidates if item["id"] == response.get("choice")), None)
                 if chosen is None:
                     logger.warning(f"外部决策答复无效（{response.get('choice')}），使用原有逻辑")
+                    self._consumed(request_id, None, "invalid")
                     return None
                 logger.success(f"外部决策：{kind} 选择 {chosen['id']}（{chosen.get('label', '')}）{response.get('reason', '')[:80]}")
+                self._consumed(request_id, chosen["id"], "decider")
                 result = {**chosen, "reason": response.get("reason", "")}
                 if isinstance(response.get("x"), int) and isinstance(response.get("y"), int):
                     result["point"] = [response["x"], response["y"]]
                 return result
             time.sleep(POLL_INTERVAL)
         logger.warning(f"外部决策超时（{self.timeout:.0f} 秒），使用原有逻辑")
+        self._consumed(request_id, None, "timeout")
         return None
+
+    def _consumed(self, request_id: str, choice, source: str):
+        """记录实际采用的结果；写入失败只记日志，不影响本次决策。"""
+        try:
+            record = {"id": request_id, "choice": choice, "source": source, "at": time.time()}
+            _write_atomic(self.mailbox / "consumed" / f"{request_id}.json", json.dumps(record, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            logger.exception("外部决策采用记录写入失败")
 
 
 INTERACTIVE_SAFE_AREAS = ([0, 150, 720, 880], [0, 1030, 720, 110])

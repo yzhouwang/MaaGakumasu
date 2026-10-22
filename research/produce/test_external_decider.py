@@ -1,4 +1,4 @@
-"""外部决策接口回归：文件信箱的请求/答复、坐标透传与超时，以及交互式画面循环的安全区域、结束与停止处理。
+"""外部决策接口回归：文件信箱的请求/答复/实际采用记录、坐标透传与超时，以及交互式画面循环的安全区域、结束与停止处理。
 
 使用合成截图与替身决策者，不连接设备、不调用模型；临时信箱写入 debug/research/produce/tests/。
 需要安装 maafw（截图编码使用 MaaFramework）。
@@ -194,6 +194,13 @@ class MailboxTest(unittest.TestCase):
         thread.start()
         self.addCleanup(thread.join)
 
+    def consumed(self):
+        """consumed/ 中的实际采用记录（按请求顺序），只取 choice 与 source。"""
+        return [
+            (record["choice"], record["source"])
+            for record in (json.loads(path.read_text(encoding="utf-8")) for path in sorted((self.mailbox / "consumed").glob("*.json")))
+        ]
+
     def test_valid_answer_returns_candidate_with_point(self):
         self.answer_with({"choice": "skip", "reason": "r", "x": 10, "y": 20})
         chosen = self.decider.ask("battle", IMAGE, self.candidates, fallback="card_0", extra_images={"offer1": IMAGE})
@@ -202,16 +209,20 @@ class MailboxTest(unittest.TestCase):
         self.assertEqual(request["fallback"], "card_0")
         self.assertTrue((self.mailbox / request["frame"]).exists())
         self.assertTrue((self.mailbox / request["extra_frames"]["offer1"]).exists())
+        self.assertEqual(self.consumed(), [("skip", "decider")])
 
     def test_unknown_choice_is_rejected(self):
         self.answer_with({"choice": "card_9"})
         self.assertIsNone(self.decider.ask("battle", IMAGE, self.candidates))
+        # 答复不在候选中：Agent 回退原有逻辑，记录为 invalid。
+        self.assertEqual(self.consumed(), [(None, "invalid")])
 
     def test_timeout_and_stopping(self):
         self.decider.timeout = 0.3
         self.assertIsNone(self.decider.ask("battle", IMAGE, self.candidates))
         self.decider.timeout = 30
         self.assertIsNone(self.decider.ask("battle", IMAGE, self.candidates, stopping=lambda: True))
+        self.assertEqual(self.consumed(), [(None, "timeout"), (None, "stopped")])
 
 
 if __name__ == "__main__":
