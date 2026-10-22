@@ -85,7 +85,7 @@ def main():
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
-    from ghl_frame import ghl_frame
+    from ghl_frame import read_battle_request
     from produce.state import BattleStateReader
     from utils.image_io import read_image
     from produce.catalog import SkillCardCatalog
@@ -115,18 +115,7 @@ def main():
         labelled = [decision for decision in fixture["decisions"] if decision.get("f") and decision["id"] in requests]
         for decision in labelled[: args.limit or None]:
             request = requests[decision["id"]]
-            candidates = [
-                {"candidate_id": item["id"], "box": item["box"], "label": item.get("detector_label"), "in_hand_region": True}
-                for item in request["candidates"]
-                if item["id"].startswith("card_")
-            ]
-            candidates += [
-                {"candidate_id": f"unplayable_{index}", "box": box, "label": "useless", "in_hand_region": True}
-                for index, box in enumerate((request.get("state") or {}).get("unplayable_card_boxes") or [])
-            ]
-            result = vision.analyze(read_image(mailbox / request["frame"]), catalog, candidates)
-            drink_boxes = [item["box"] for item in request["candidates"] if item["id"].startswith("drink_")]
-            read = ghl_frame(result, drink_boxes)
+            _, read = read_battle_request(vision, catalog, read_image(mailbox / request["frame"]), request)
             exported.append({"run": fixture["run"], "id": decision["id"], "f": read})
             kind = fixture["battles"][decision["battle"]]["kind"]
             layout = "lesson" if kind == "lesson" else "exam"
