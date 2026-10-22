@@ -23,6 +23,7 @@ from produce.state import (
     turn_ring,
     turn_fields,
     buff_overflow,
+    majority_color,
     added_turns_field,
     masked_correlation,
     buff_column_occluded,
@@ -259,6 +260,18 @@ class TurnRingTest(unittest.TestCase):
         self.assertEqual((ring["segments"], ring["remaining"], ring["status"]), (12, types[5:], "observed"))
         # 剩余回合与色段数不一致：不作为已确认的回合属性。
         self.assertEqual(turn_ring(self.ring_image(types, elapsed=5), 8)["status"], "partial")
+
+    def test_tied_votes_are_settled_the_same_way_every_run(self):
+        # 标记盖住当前回合段时属性色与「?」常同票；决胜不随集合遍历顺序（Python 的哈希种子）变化。
+        for votes, expected in [
+            (["Vi", "?", "Vi", "?", None], "Vi"),
+            ([None, "Da", None, "Da", "?"], "Da"),
+            (["Vi", "Vo", "Vi", "Vo"], "?"),
+            (["?", None, "?", None, "Vi"], None),
+            (["Vo", "Vo", "?"], "Vo"),
+        ]:
+            for order in (votes, votes[::-1]):
+                self.assertEqual(majority_color(order), expected, order)
 
 
 class GhlFrameTest(unittest.TestCase):

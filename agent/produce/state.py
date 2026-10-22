@@ -149,6 +149,19 @@ def ring_color(bgr):
     return "?"
 
 
+def majority_color(votes):
+    """
+    取票数最多的颜色。属性色与无法判断（「?」）或暗色同票时取属性色（标记常盖住当前回合段的一部分），
+    两种属性色同票为「?」，「?」与暗色同票为暗色。决胜不依赖集合的遍历顺序，结果与 Python 的哈希种子无关。
+    """
+    best = max(votes.count(color) for color in votes)
+    top = {color for color in votes if votes.count(color) == best}
+    colors = top & {"Vi", "Vo", "Da"}
+    if colors:
+        return colors.pop() if len(colors) == 1 else "?"
+    return None if None in top else "?"
+
+
 def ring_samples(array, segments, offset):
     """按角度依次取环上各段（或段间缝隙，offset 为 0 时）的多数颜色。"""
     (cx, cy), radius = TURN_RING["center"], TURN_RING["radius"]
@@ -160,7 +173,7 @@ def ring_samples(array, segments, offset):
                 angle = math.radians(offset + index * 360 / segments + degrees)
                 x, y = round(cx - (radius + dr) * math.sin(angle)), round(cy - (radius + dr) * math.cos(angle))
                 votes.append(ring_color(array[y, x]))
-        colors.append(max(set(votes), key=votes.count))
+        colors.append(majority_color(votes))
     return colors
 
 
