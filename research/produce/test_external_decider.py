@@ -420,6 +420,25 @@ class DeciderDeadlineTest(unittest.TestCase):
         self.assertEqual((responses["c"]["choice"], responses["c"]["source"]), ("rest", "fallback"))
         self.assertIn("the model was not asked", responses["c"]["reason"])
 
+    def test_failed_call_starts_a_new_session(self):
+        decider = Decider(decider_args(self.mailbox))
+        commands = []
+
+        def run(command, **kwargs):
+            # 替身 claude CLI：第一次调用超时（会话可能没有建立），之后正常作答
+            commands.append(command)
+            if len(commands) == 1:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"structured_output": {"choice": "Vo", "reason": "r"}}), stderr="")
+
+        with mock.patch.object(subprocess, "run", run):
+            for request_id in ("a", "b", "c"):
+                self.handle(decider, self.request(request_id))
+        # 超时的会话不再续接：第二次调用另开新会话，第三次续接第二次的会话。
+        self.assertIn("--session-id", commands[1])
+        self.assertNotIn("--resume", commands[1])
+        self.assertEqual(commands[2][commands[2].index("--resume") + 1], commands[1][commands[1].index("--session-id") + 1])
+
 
 class HandoffTest(unittest.TestCase):
     """GHL 与 fallback 的决策在下次问模型时附在提示中：模型作答后清空，决策者重启后从决策日志恢复。"""

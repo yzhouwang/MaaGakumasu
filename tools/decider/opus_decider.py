@@ -360,13 +360,18 @@ class Decider:
             command += ["--session-id", session["id"], "--system-prompt", self.system_prompt]
         started = time.time()
         try:
-            completed = subprocess.run(command, cwd=self.mailbox, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # 超时异常的说明含整条命令（提示词与系统提示），答复与日志中只记时限
-            raise RuntimeError(f"claude did not answer within {timeout:.0f} s") from None
-        output = json.loads(completed.stdout or "{}")
-        if output.get("is_error") or completed.returncode != 0:
-            raise RuntimeError(f"claude failed ({completed.returncode}): {str(output.get('result') or completed.stderr)[:300]}")
+            try:
+                completed = subprocess.run(command, cwd=self.mailbox, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # 超时异常的说明含整条命令（提示词与系统提示），答复与日志中只记时限
+                raise RuntimeError(f"claude did not answer within {timeout:.0f} s") from None
+            output = json.loads(completed.stdout or "{}")
+            if output.get("is_error") or completed.returncode != 0:
+                raise RuntimeError(f"claude failed ({completed.returncode}): {str(output.get('result') or completed.stderr)[:300]}")
+        except Exception:
+            # 失败的调用可能没有建立会话（例如首次调用被中止），之后的续接会一直失败：下次另开新会话，备注与决策摘要照常附上
+            self.sessions.pop(key, None)
+            raise
         answer = output.get("structured_output")
         if not isinstance(answer, dict):
             text = str(output.get("result", ""))
