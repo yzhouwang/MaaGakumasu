@@ -1,9 +1,11 @@
-"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览。
+"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览，
+以及实况读取的断行恢复与失败重试。
 
-使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。
+使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。临时文件写入 debug/research/produce/tests/。
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,7 +14,18 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 from ghl_frame import LESSON_ICON, lesson_attribute
-from ghl_readings import OPTION_LEFT, OPTION_WIDTH, SELECTION_BANDS, offer_name, week_fields, reward_fields, selected_option, customize_fields
+from ghl_readings import (
+    OPTION_LEFT,
+    OPTION_WIDTH,
+    SELECTION_BANDS,
+    offer_name,
+    week_fields,
+    reward_fields,
+    completed_ids,
+    read_with_retry,
+    selected_option,
+    customize_fields,
+)
 
 
 def token(text, box, confidence=1.0):
@@ -115,6 +128,32 @@ class SelectedOptionTest(unittest.TestCase):
         image = np.full((1280, 720, 3), (200, 210, 220), dtype=np.uint8)
         image[803:902, OPTION_LEFT[0] : OPTION_LEFT[0] + OPTION_WIDTH] = self.ORANGE
         self.assertIsNone(selected_option(image))
+
+
+class FollowTest(unittest.TestCase):
+    def setUp(self):
+        root = ROOT / "debug/research/produce/tests"
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="readings_", dir=root)
+        self.addCleanup(temporary.cleanup)
+        self.out = Path(temporary.name) / "readings.jsonl"
+
+    def test_torn_last_line_and_failed_rows_are_not_done(self):
+        # 上次写到一半中断：残行补上换行，之后追加的一行自成一行；读取失败的行重启后重读。
+        self.out.write_text('{"id": "a"}\n{"id": "b", "error": "x"}\n{"id": "c", "fra', encoding="utf-8")
+        self.assertEqual(completed_ids(self.out), {"a"})
+        with self.out.open("a", encoding="utf-8") as stream:
+            stream.write('{"id": "c"}\n')
+        self.assertEqual(completed_ids(self.out), {"a", "c"})
+
+    def test_failed_reads_are_retried(self):
+        rows = [{"id": "x", "error": "frame not written yet"}, {"id": "x"}]
+        waits = []
+        self.assertEqual(read_with_retry(lambda request, choice: rows.pop(0), {"id": "x"}, None, sleep=waits.append), {"id": "x"})
+        self.assertEqual(waits, [1])
+        # 一直失败：重试之后写入带 error 的一行。
+        row = read_with_retry(lambda request, choice: {"id": "x", "error": "e"}, {"id": "x"}, None, sleep=waits.append)
+        self.assertEqual((row["error"], waits), ("e", [1, 1, 2]))
 
 
 if __name__ == "__main__":

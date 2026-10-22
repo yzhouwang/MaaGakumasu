@@ -251,14 +251,62 @@ class Reader:
         return row
 
 
+def completed_ids(out):
+    """输出中已读成功的请求 id。上次写到一半中断的残行先补上换行，使下一行不与它拼接；
+    读不出的行与读取失败的行不算完成（重启后重读，后写的一行取代前面的）。"""
+    if not out.exists():
+        return set()
+    text = out.read_text(encoding="utf-8")
+    if text and not text.endswith("\n"):
+        with out.open("a", encoding="utf-8") as stream:
+            stream.write("\n")
+    done = set()
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not row.get("error"):
+            done.add(row["id"])
+    return done
+
+
+def read_with_retry(read, request, choice, waits=(1, 2), sleep=None):
+    """读取失败（截图尚未写完、识别出错等）按 waits 的间隔重试，仍失败则返回带 error 的一行。"""
+    import time
+
+    row = read(request, choice)
+    for wait in waits:
+        if not row.get("error"):
+            break
+        (sleep or time.sleep)(wait)
+        row = read(request, choice)
+    return row
+
+
+def lock_output(out):
+    """同一输出只允许一个读取进程写入：锁文件记录进程号，进程已不在时视为残留并接管。"""
+    import os
+    import atexit
+
+    lock = out.with_name(out.name + ".lock")
+    try:
+        os.kill(int(lock.read_text().strip()), 0)
+        raise SystemExit(f"另一个读取进程（{lock.read_text().strip()}）正在写 {out}")
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, PermissionError):
+            raise SystemExit(f"另一个读取进程正在写 {out}") from exc
+    lock.write_text(str(os.getpid()))
+    atexit.register(lambda: lock.unlink(missing_ok=True))
+
+
 def follow(reader, out, poll=0.3):
     """监视 requests/：每个新请求读一次画面并追加一行（按请求 id 的顺序，即提出的顺序）。"""
     import time
 
-    done = set()
-    if out.exists():
-        done = {json.loads(line)["id"] for line in out.read_text(encoding="utf-8").splitlines() if line.strip()}
     out.parent.mkdir(parents=True, exist_ok=True)
+    lock_output(out)
+    done = completed_ids(out)
     print(f"监视 {reader.mailbox / 'requests'} → {out}（已有 {len(done)} 条）", flush=True)
     while True:
         for path in sorted((reader.mailbox / "requests").glob("*.json")):
@@ -273,7 +321,7 @@ def follow(reader, out, poll=0.3):
                 choice = json.loads(response.read_text(encoding="utf-8")).get("choice") if response.exists() else None
             except (OSError, ValueError):
                 choice = None
-            row = reader.read(request, choice)
+            row = read_with_retry(reader.read, request, choice)
             with out.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(row, ensure_ascii=False) + "\n")
             done.add(path.stem)
