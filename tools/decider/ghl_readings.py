@@ -8,6 +8,8 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
 - reward：奖励种类（技能卡 card、P 饮料 drink、P 道具 item；开局奖励的画面与饮料奖励相同，由 GHL 按位置区分）、
   各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
+- customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称与价格、选中的选项与其价格；
+- consult（相谈）：顶部的 P 点数；
 - 其余种类：种类与答复。
 
 用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
@@ -31,6 +33,19 @@ OFFER_TITLE_ROI = [120, 485, 480, 55]
 # 行动选择画面：左上角距考试的周数，三维下方的成长加成。
 WEEK_COUNTER_ROI = [30, 25, 175, 115]
 WEEK_BONUS_ROI = [150, 740, 420, 40]
+# 特别指导与相谈画面顶部的 P 点数。
+P_COUNTER_ROI = [330, 88, 110, 50]
+# 特别指导的改造预览画面：上方为当前卡牌，下方为改造后的预览，菜单至多三个选项，选中项四角有橙色括号，
+# P 点数左侧的气泡为选中项的价格（「-70」）。卡牌列表画面的同名菜单在列表上方，不作为改造读数。
+CUSTOMIZE_COST_ROI = [166, 92, 108, 46]
+CUSTOMIZE_TITLE_ROI = [192, 166, 470, 42]
+CUSTOMIZE_MENU_ROI = [240, 756, 240, 32]
+OPTION_LEFT = (38, 257, 476)
+OPTION_WIDTH = 207
+OPTION_LABEL_ROWS = (808, 60)
+OPTION_PRICE_ROWS = (866, 36)
+# 选项卡上下缘之外的两条横带：只有选中项的括号是橙色。
+SELECTION_BANDS = ((784, 800), (904, 919))
 REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
 ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
 
@@ -97,6 +112,89 @@ def week_fields(counter_items, bonus_items):
     return {"week": week, "counter": label, "bonus": dict(zip(("Vo", "Da", "Vi"), bonus)) if len(bonus) == 3 else None}
 
 
+def first_number(items, confidence=0.6):
+    """读数中第一个整数（忽略负号），读不到为 None。"""
+    for item in sorted(items, key=lambda item: item["box"][0]):
+        match = re.search(r"\d+", item["text"])
+        if match and item["confidence"] >= confidence:
+            return int(match.group())
+    return None
+
+
+def option_rois(slot):
+    left = OPTION_LEFT[slot]
+    return [left, OPTION_LABEL_ROWS[0], OPTION_WIDTH, OPTION_LABEL_ROWS[1]], [left + 55, OPTION_PRICE_ROWS[0], 130, OPTION_PRICE_ROWS[1]]
+
+
+def customize_fields(p_items, cost_items, title_items, menu_items, slots):
+    """
+    特别指导画面的文字 → P 点数；改造预览画面另有卡牌名文字、各选项（名称与价格）与选中项的价格。
+
+    Args:
+        slots: 每个选项位置的 (名称文字, 价格文字)，从左到右；名称为空的位置没有选项。
+    """
+    fields = {"p": first_number(p_items)}
+    if not any("カスタマイズ" in item["text"] for item in menu_items):
+        return fields
+    options = []
+    for label_items, price_items in slots:
+        # 两行的名称按行拼接；Maa 偶尔将片假名「タ」误识为形近的「夕」。
+        label = "".join(item["text"] for item in sorted(label_items, key=lambda item: (item["box"][1], item["box"][0])) if item["confidence"] >= 0.6)
+        if not label:
+            break
+        options.append({"label": label.replace("夕", "タ"), "price": first_number(price_items)})
+    title = max(title_items, key=lambda item: item["confidence"], default=None)
+    return dict(fields, screen="preview", title=title, options=options, cost=first_number(cost_items))
+
+
+def selected_option(array):
+    """选中的选项序号：按两条横带中橙色括号的中点对应选项位置，读不到为 None。"""
+    columns = []
+    for top, bottom in SELECTION_BANDS:
+        band = array[top:bottom].astype(int)
+        blue, green, red = band[..., 0], band[..., 1], band[..., 2]
+        orange = (red > 220) & (green > 110) & (green < 200) & (blue < 110)
+        columns.append(orange.any(axis=0).nonzero()[0])
+    if any(len(found) == 0 for found in columns):
+        return None
+    left, right = int(columns[0].min()), int(columns[0].max())
+    # 一对括号的外缘相距约 230 像素。
+    if not 200 <= right - left <= 260:
+        return None
+    middle = (left + right) / 2
+    slot = min(range(len(OPTION_LEFT)), key=lambda index: abs(OPTION_LEFT[index] + OPTION_WIDTH / 2 - middle))
+    return slot if abs(OPTION_LEFT[slot] + OPTION_WIDTH / 2 - middle) <= 30 else None
+
+
+def customize_reading(vision, catalog, mailbox, request):
+    """特别指导：P 点数；改造预览画面另有卡牌名（查库，未识别为 None）、菜单选项、选中项及其价格。"""
+    from utils.image_io import read_image
+    from produce.console import card_name
+    from produce.analysis import normalized_image
+
+    array = normalized_image(read_image(mailbox / request["frame"]))
+    slots = [tuple(texts(vision, array, roi) for roi in option_rois(slot)) for slot in range(len(OPTION_LEFT))]
+    fields = customize_fields(
+        texts(vision, array, P_COUNTER_ROI),
+        texts(vision, array, CUSTOMIZE_COST_ROI),
+        texts(vision, array, CUSTOMIZE_TITLE_ROI),
+        texts(vision, array, CUSTOMIZE_MENU_ROI),
+        slots,
+    )
+    if fields.get("screen") != "preview":
+        return fields
+    title = fields.pop("title")
+    identity = catalog.match(title["text"], title["confidence"]) if title else {}
+    if identity.get("database_card_id") and identity.get("status") == "matched":
+        fields["card"] = card_name(identity)
+    elif identity.get("database_card_id") and identity.get("unknown_reason") == "extra_upgrade_markers":
+        fields["card"] = identity["database_name"]
+    else:
+        fields["card"] = None
+    fields["selected"] = selected_option(array)
+    return fields
+
+
 def week_reading(vision, mailbox, request):
     """行动选择画面：周数与三维成长加成（Vo、Da、Vi），以及请求中已读取的体力、P 点数与三维。"""
     from utils.image_io import read_image
@@ -118,7 +216,7 @@ def main():
     from produce.state import BattleStateReader
     from utils.image_io import read_image
     from produce.catalog import RewardCatalog, SkillCardCatalog
-    from produce.analysis import OfflineVision
+    from produce.analysis import OfflineVision, normalized_image
 
     resource = ROOT / "assets" / "resource" / "base"
     database = ROOT / "assets" / "data" / "produce_skill_cards.json"
@@ -140,6 +238,11 @@ def main():
                 row["reward"] = reward_reading(vision, rewards, args.mailbox, request)
             elif request["kind"] == "week":
                 row["week"] = week_reading(vision, args.mailbox, request)
+            elif request["kind"] == "customize":
+                row["customize"] = customize_reading(vision, catalog, args.mailbox, request)
+            elif request["kind"] == "consult":
+                array = normalized_image(read_image(args.mailbox / request["frame"]))
+                row["consult"] = {"p": first_number(texts(vision, array, P_COUNTER_ROI))}
         except Exception as exc:
             row["error"] = str(exc)
         rows.append(row)
