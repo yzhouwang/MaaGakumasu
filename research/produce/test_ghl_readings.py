@@ -46,7 +46,7 @@ class WeekFieldsTest(unittest.TestCase):
 
     def test_a_countdown_no_week_can_have_is_not_read(self):
         # 实况中「中間まで7週」读成「中間まで77週1」：10 − 77 = −67 周。标签照记，周数为未读。
-        for label in ("中間まで77週1", "最終まで12週", "中間まで0週"):
+        for label in ("中間まで77週1", "最終まで12週", "中間まで0週", "中間まで107週", "最終まで101週"):
             fields = week_fields([token(label, [40, 30, 150, 60])], [])
             self.assertEqual((fields["week"], fields["counter"]), (None, label), label)
 

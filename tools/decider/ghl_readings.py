@@ -167,7 +167,8 @@ def consult_reading(vision, rewards, mailbox, request):
 def week_fields(counter_items, bonus_items):
     """行动选择画面的周数标签与成长加成文字 → 周数（中间考试前为第 10 − N 周，之后为第 18 − N 周）、标签与三维成长加成。"""
     label = "".join(item["text"] for item in counter_items)
-    match = re.search(r"(\d{1,2})週", label)
+    # 整个数字：「107週」不能只取后两位当作 7 周
+    match = re.search(r"(\d+)週", label)
     exam_week = 18 if "最終" in label else 10 if "中間" in label else None
     week = exam_week - int(match.group(1)) if match and exam_week else None
     # 读错的数字（「中間まで7週」读成「中間まで77週1」得 −67 周）：不是考试前的周时记为未读，标签照记
