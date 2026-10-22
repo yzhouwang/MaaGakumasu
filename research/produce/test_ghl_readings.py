@@ -145,6 +145,9 @@ class FollowTest(unittest.TestCase):
         with self.out.open("a", encoding="utf-8") as stream:
             stream.write('{"id": "c"}\n')
         self.assertEqual(completed_ids(self.out), {"a", "c"})
+        # 断在多字节字符中间的残行。
+        self.out.write_bytes('{"id": "a"}\n{"id": "d", "hand": "'.encode("utf-8") + "初".encode("utf-8")[:2])
+        self.assertEqual(completed_ids(self.out), {"a"})
 
     def test_failed_reads_are_retried(self):
         rows = [{"id": "x", "error": "frame not written yet"}, {"id": "x"}]

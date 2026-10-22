@@ -256,7 +256,8 @@ def completed_ids(out):
     读不出的行与读取失败的行不算完成（重启后重读，后写的一行取代前面的）。"""
     if not out.exists():
         return set()
-    text = out.read_text(encoding="utf-8")
+    # 写到一半中断的行可能断在多字节字符中间：按替换字符解码，该行读不出即跳过。
+    text = out.read_bytes().decode("utf-8", errors="replace")
     if text and not text.endswith("\n"):
         with out.open("a", encoding="utf-8") as stream:
             stream.write("\n")
@@ -300,17 +301,21 @@ def lock_output(out):
     atexit.register(lambda: lock.unlink(missing_ok=True))
 
 
-def follow(reader, out, poll=0.3):
-    """监视 requests/：每个新请求读一次画面并追加一行（按请求 id 的顺序，即提出的顺序）。"""
+def follow(reader, out, poll=0.3, retry_after=30, attempts=5):
+    """
+    监视 requests/：每个新请求读一次画面并追加一行（按请求 id 的顺序，即提出的顺序）。
+    读取失败的请求每隔 retry_after 秒再读，至多 attempts 轮；读成功时追加的一行取代失败的一行。
+    """
     import time
 
     out.parent.mkdir(parents=True, exist_ok=True)
     lock_output(out)
     done = completed_ids(out)
+    failed = {}
     print(f"监视 {reader.mailbox / 'requests'} → {out}（已有 {len(done)} 条）", flush=True)
     while True:
         for path in sorted((reader.mailbox / "requests").glob("*.json")):
-            if path.stem in done:
+            if path.stem in done or failed.get(path.stem, (0, 0))[1] > time.time():
                 continue
             try:
                 request = json.loads(path.read_text(encoding="utf-8"))
@@ -324,7 +329,12 @@ def follow(reader, out, poll=0.3):
             row = read_with_retry(reader.read, request, choice)
             with out.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-            done.add(path.stem)
+            rounds = failed.get(path.stem, (0, 0))[0] + 1
+            if not row.get("error") or rounds >= attempts:
+                done.add(path.stem)
+                failed.pop(path.stem, None)
+            else:
+                failed[path.stem] = (rounds, time.time() + retry_after)
             print(f"[{row['id']}] {row['kind']}{' 读取失败：' + row['error'] if row.get('error') else ''}", flush=True)
         time.sleep(poll)
 
