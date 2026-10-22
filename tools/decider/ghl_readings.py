@@ -1,0 +1,152 @@
+"""从决策信箱逐条读出 GHL 牌组账本所需的画面读数。
+
+GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（src/bridge/maaLedger.ts）：起始牌组、
+每场战斗、每个决策的画面状态，以及决策之间的牌组、饮料、P 道具变化。本脚本只读画面，不推断牌组。
+
+每条决策一行 JSON：
+- battle：GHL 实况帧（ghl_frame.read_battle_request），战斗编号取请求的 context.battle_id；
+- reward：奖励种类（技能卡 card、P 饮料 drink、P 道具 item；开局奖励的画面与饮料奖励相同，由 GHL 按位置区分）、
+  各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
+- week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
+- 其余种类：种类与答复。
+
+用法（仓库根目录，python 需安装 maafw，例如 beta 的内置 Python）：
+    python tools/decider/ghl_readings.py --mailbox debug/decider/mailbox --out debug/decider/mailbox/ghl_readings.jsonl
+"""
+
+import re
+import sys
+import json
+import argparse
+import unicodedata
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(Path(__file__).resolve().parent)]
+
+# 奖励画面：提示语（「受け取るスキルカードを選んでください」等）、底部的剩余次数、候选详情的标题。
+REWARD_PROMPT_ROI = [40, 590, 640, 60]
+REWARD_COUNTER_ROI = [20, 1030, 680, 90]
+OFFER_TITLE_ROI = [120, 485, 480, 55]
+# 行动选择画面：左上角距考试的周数，三维下方的成长加成。
+WEEK_COUNTER_ROI = [30, 25, 175, 115]
+WEEK_BONUS_ROI = [150, 740, 420, 40]
+REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
+ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
+
+
+def texts(vision, array, roi):
+    return [dict(item, text=unicodedata.normalize("NFKC", item["text"]).strip()) for item in vision._read_title(array, roi)]
+
+
+def reward_fields(prompt_items, counter_items):
+    """奖励画面的提示语与底部计数文字 → (提示语, 奖励种类或 None, 剩余次数)。"""
+    prompt = "".join(item["text"] for item in prompt_items)
+    kind = next((value for word, value in REWARD_KINDS if word in prompt), None)
+    counters = {}
+    for item in counter_items:
+        match = re.fullmatch(r"あと(\d+)回", item["text"])
+        if match and item["confidence"] >= 0.7:
+            # 左侧为卡牌移除，右侧为重抽。
+            counters["removals" if item["box"][0] + item["box"][2] / 2 < 360 else "rerolls"] = int(match.group(1))
+    return prompt, kind, counters
+
+
+def offer_name(identity):
+    """候选详情标题的查库结果 → (GHL 名称, 种类)；技能卡最多记一个「+」（GHL 没有「++」），未识别为 (None, None)。"""
+    if not (identity.get("status") == "matched" or identity.get("unknown_reason") == "extra_upgrade_markers"):
+        return None, None
+    name = identity["database_name"]
+    if identity.get("item_kind") == "skill_card":
+        name = name.rstrip("+") + "+" * min(1, identity.get("observed_plus_count", 0))
+    return name, ITEM_KINDS.get(identity.get("item_kind"))
+
+
+def reward_reading(vision, rewards, mailbox, request):
+    """奖励：种类、候选名称（与候选顺序一致，读不到为 None）与剩余次数。"""
+    from utils.image_io import read_image
+    from produce.analysis import normalized_image
+
+    array = normalized_image(read_image(mailbox / request["frame"]))
+    prompt, kind, counters = reward_fields(texts(vision, array, REWARD_PROMPT_ROI), texts(vision, array, REWARD_COUNTER_ROI))
+    candidates = [candidate["id"] for candidate in request["candidates"] if candidate["id"].startswith("reward_")]
+    names, kinds = [], []
+    for candidate in candidates:
+        frame = (request.get("extra_frames") or {}).get("offer" + candidate.removeprefix("reward_"))
+        title = [item for item in texts(vision, normalized_image(read_image(mailbox / frame)), OFFER_TITLE_ROI) if item["confidence"] >= 0.6] if frame else []
+        name, item_kind = offer_name(rewards.match_tokens(title) if title else {})
+        names.append(name)
+        kinds.append(item_kind)
+    # 提示语读不到（画面过渡）而候选同属一种时，按名称所属种类补全。
+    if kind is None and names and all(kinds) and len(set(kinds)) == 1:
+        kind = kinds[0]
+    return {"kind": kind, "prompt": prompt, "names": names, "candidates": candidates, "counters": counters}
+
+
+def week_fields(counter_items, bonus_items):
+    """行动选择画面的周数标签与成长加成文字 → 周数（中间考试前为第 10 − N 周，之后为第 18 − N 周）、标签与三维成长加成。"""
+    label = "".join(item["text"] for item in counter_items)
+    match = re.search(r"(\d{1,2})週", label)
+    exam_week = 18 if "最終" in label else 10 if "中間" in label else None
+    week = exam_week - int(match.group(1)) if match and exam_week else None
+    bonus = []
+    for item in sorted(bonus_items, key=lambda item: item["box"][0]):
+        match = re.search(r"(\d+(?:\.\d)?)%", item["text"])
+        if match:
+            bonus.append(float(match.group(1)))
+    return {"week": week, "counter": label, "bonus": dict(zip(("Vo", "Da", "Vi"), bonus)) if len(bonus) == 3 else None}
+
+
+def week_reading(vision, mailbox, request):
+    """行动选择画面：周数与三维成长加成（Vo、Da、Vi），以及请求中已读取的体力、P 点数与三维。"""
+    from utils.image_io import read_image
+    from produce.analysis import normalized_image
+
+    array = normalized_image(read_image(mailbox / request["frame"]))
+    fields = week_fields(texts(vision, array, WEEK_COUNTER_ROI), texts(vision, array, WEEK_BONUS_ROI))
+    return dict(fields, resources=request.get("state") or {})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--mailbox", type=Path, required=True, help="决策信箱目录（含 decisions.jsonl 与 frames/）")
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    sys.stdout.reconfigure(encoding="utf-8")
+
+    from ghl_frame import read_battle_request
+    from produce.state import BattleStateReader
+    from utils.image_io import read_image
+    from produce.catalog import RewardCatalog, SkillCardCatalog
+    from produce.analysis import OfflineVision
+
+    resource = ROOT / "assets" / "resource" / "base"
+    database = ROOT / "assets" / "data" / "produce_skill_cards.json"
+    catalog = SkillCardCatalog(database, ROOT / "assets" / "data" / "skill_card_aliases.json")
+    rewards = RewardCatalog(catalog, database.with_name("produce_reward_items.json"))
+    vision = OfflineVision(resource, args.out.parent / "vision_log")
+    vision.state_reader = BattleStateReader(database.with_name("battle_buff_templates.json"), vision._read_title, vision.match_buff_templates, resource / "image")
+
+    rows = []
+    for line in (args.mailbox / "decisions.jsonl").read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        request = record["request"]
+        row = {"id": request["id"], "kind": request["kind"], "choice": (record.get("response") or {}).get("choice")}
+        try:
+            if request["kind"] == "battle":
+                _, row["frame"] = read_battle_request(vision, catalog, read_image(args.mailbox / request["frame"]), request)
+                row["battle_id"] = (request.get("context") or {}).get("battle_id")
+            elif request["kind"] == "reward":
+                row["reward"] = reward_reading(vision, rewards, args.mailbox, request)
+            elif request["kind"] == "week":
+                row["week"] = week_reading(vision, args.mailbox, request)
+        except Exception as exc:
+            row["error"] = str(exc)
+        rows.append(row)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    print(f"{len(rows)} 条决策 → {args.out}")
+
+
+if __name__ == "__main__":
+    main()

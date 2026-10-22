@@ -29,9 +29,13 @@ python research/produce/test_produce_decisions.py
 python research/produce/test_external_decider.py
 python research/produce/eval_battle_frames.py --fixture <GHL>/fixtures/maa-live/<run>.json --capture-root <采集仓库根目录> --output debug/research/produce/frame_reader
 python research/produce/test_battle_frames.py
+python tools/decider/ghl_readings.py --mailbox <采集仓库根目录>/debug/decider/mailbox --out debug/research/produce/ledger/<run>-readings.jsonl
+python research/produce/test_ghl_readings.py
 ```
 
 `eval_battle_frames.py` 用 GHL（gakumas-headless-lab）实况夹具中的人工读数逐字段核对战斗画面识别（课程/考试 HUD、Buff、手牌、饮料），输出按字段统计的 `report.json` 与逐帧不一致的 `mismatches.jsonl`；需要安装 maafw，人工读数与采集信箱均不入库。`test_battle_frames.py` 为替身 OCR 与合成图像的回归。
+
+`tools/decider/ghl_readings.py` 从决策信箱逐条读出 GHL 牌组账本（`src/bridge/maaLedger.ts`）所需的画面读数：战斗帧、奖励的种类、候选名称与剩余次数、行动选择画面的周数与成长加成；只读画面，不推断牌组。`test_ghl_readings.py` 为替身 OCR 的回归。
 
 `capture_battle.py` 是显式启动的只读 ADB 旁路采样入口，参数见 `--help`；不会因生成报告或运行测试而启动。它使用可选开发依赖 OpenCV，模板取样使用 Pillow，均不增加客户端运行依赖。详细操作见 [出牌数据采集](../docs/zh_cn/出牌数据采集.md)。
 
