@@ -143,6 +143,9 @@ def week_fields(counter_items, bonus_items):
     match = re.search(r"(\d{1,2})週", label)
     exam_week = 18 if "最終" in label else 10 if "中間" in label else None
     week = exam_week - int(match.group(1)) if match and exam_week else None
+    # 读错的数字（「中間まで7週」读成「中間まで77週1」得 −67 周）：不是考试前的周时记为未读，标签照记
+    if week is not None and not (1 if exam_week == 10 else 11) <= week < exam_week:
+        week = None
     bonus = []
     for item in sorted(bonus_items, key=lambda item: item["box"][0]):
         match = re.search(r"(\d+(?:\.\d)?)%", item["text"])

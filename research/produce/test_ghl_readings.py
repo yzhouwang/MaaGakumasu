@@ -39,6 +39,12 @@ class WeekFieldsTest(unittest.TestCase):
         for label, week in [("9週中間まで", 1), ("中間まで7週1", 3), ("7週最終まで1", 11), ("最終まで4週i", 14), ("中間まで", None)]:
             self.assertEqual(week_fields([token(label, [40, 30, 150, 60])], [])["week"], week, label)
 
+    def test_a_countdown_no_week_can_have_is_not_read(self):
+        # 实况中「中間まで7週」读成「中間まで77週1」：10 − 77 = −67 周。标签照记，周数为未读。
+        for label in ("中間まで77週1", "最終まで12週", "中間まで0週"):
+            fields = week_fields([token(label, [40, 30, 150, 60])], [])
+            self.assertEqual((fields["week"], fields["counter"]), (None, label), label)
+
     def test_growth_bonus_left_to_right(self):
         bonus = [token("26.0%", [300, 745, 60, 30]), token("22.7%", [160, 745, 60, 30]), token("37.3%", [440, 745, 60, 30])]
         self.assertEqual(week_fields([], bonus)["bonus"], {"Vo": 22.7, "Da": 26.0, "Vi": 37.3})
