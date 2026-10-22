@@ -7,6 +7,7 @@
 
 import io
 import os
+import re
 import sys
 import json
 import time
@@ -24,7 +25,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 import custom.action.produce as produce_actions
-from opus_decider import HANDOFF_LINES, HANDOFF_LINE_CHARS, Decider, ghl_choice, parse_args, read_ghl_answers
+from opus_decider import HANDOFF_KEEP, HANDOFF_LINES, HANDOFF_LINE_CHARS, Decider, ghl_choice, parse_args, read_ghl_answers
 from produce.decider import ExternalDecider, _next_session, run_interactive
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -283,7 +284,7 @@ def write_request(mailbox, request_id, kind, candidates, fallback, age=0.0, **ex
 
 def summary_lines(text):
     """提示中「Decided without you」一段的各行，没有时为空。"""
-    _, _, tail = text.partition("Decided without you since your last answer")
+    _, _, tail = text.partition("Decided without you")
     return tail.splitlines()[1:]
 
 
@@ -441,28 +442,45 @@ class DeciderDeadlineTest(unittest.TestCase):
 
 
 class HandoffTest(unittest.TestCase):
-    """GHL 与 fallback 的决策在下次问模型时附在提示中：模型作答后清空，决策者重启后从决策日志恢复。"""
+    """
+    GHL 与 fallback 的决策附在问模型的提示中：续接的会话只列它尚未见过的决策，新会话（首次调用、满 --session-turns 次、
+    调用失败后）列最近的全部决策；决策者重启后从决策日志恢复。claude CLI 由替身代替，会话照常续接或另开。
+    """
 
     week = [{"id": "Vi", "label": "Vi", "sp": True}, {"id": "rest", "label": "休息"}]
     battle = [{"id": "card_0", "label": "出牌"}, {"id": "drink_0", "label": "使用饮料"}, {"id": "skip", "label": "跳过回合"}]
     offers = [{"id": "reward_1", "label": "第 1 个奖励"}, {"id": "reward_2", "label": "第 2 个奖励"}]
     classes = [{"id": "Vo", "label": "Vo 选项"}, {"id": "Vi", "label": "Vi 选项"}]
     consult = [{"id": "tap", "label": "点击画面中的一个位置"}, {"id": "wait", "label": "等待画面变化"}, {"id": "done", "label": "本画面的操作已完成"}]
+    reward = "- reward: reward_2 by GHL (take 輝くキミへ+)"
 
     def setUp(self):
         self.mailbox = temporary_mailbox(self, "decider_handoff_")
-        self.prompts, self.answers = [], []
+        self.calls, self.answers = [], []
+        patcher = mock.patch.object(subprocess, "run", self.claude)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def decider(self):
-        """决策者；模型调用由替身代替：记下提示，按顺序取预设答复（默认 wait）。"""
-        decider = Decider(decider_args(self.mailbox, "--ghl", "--ghl-wait", "0", "--no-vision"))
+    def claude(self, command, **kwargs):
+        """替身 claude CLI：记下提示与是否续接会话；按顺序取预设的选择（None 为调用超时），没有时选第一个候选。"""
+        prompt = command[command.index("-p") + 1]
+        self.calls.append({"prompt": prompt, "resume": "--resume" in command})
+        choice = self.answers.pop(0) if self.answers else re.search(r"^- ([^:]+):", prompt.split("Candidates:", 1)[1], re.M).group(1)
+        if choice is None:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"structured_output": {"choice": choice, "reason": "r"}}), stderr="")
 
-        def call_model(key, prompt, timeout):
-            self.prompts.append(prompt)
-            return {**(self.answers.pop(0) if self.answers else {"choice": "wait", "reason": "r"}), "_meta": {}}
+    def decider(self, *flags):
+        return Decider(decider_args(self.mailbox, "--ghl", "--ghl-wait", "0", "--no-vision", *flags))
 
-        decider.call_model = call_model
-        return decider
+    def summaries(self):
+        """各次调用的提示中「Decided without you」一段的各行。"""
+        return [summary_lines(call["prompt"]) for call in self.calls]
+
+    def take_reward(self, decider, request_id):
+        """GHL 选第 2 个奖励。"""
+        answer = ghl_pick("ghl/card-offer", ("reward_2", "take 輝くキミへ+"), ("reward_1", "take 笑顔の基本"))
+        self.ask(decider, request_id, "reward", self.offers, "reward_1", answer)
 
     def ask(self, decider, request_id, kind, candidates, fallback, answer=None, **extra):
         """提出请求并处理；answer 为 GHL 对它的答复（先写入 ghl/answers.jsonl）。"""
@@ -478,37 +496,71 @@ class HandoffTest(unittest.TestCase):
         for request_id, option in (("002", ("card_0", "play 先へ進む姿+")), ("003", ("drink_0", "use drink ミックススムージー"))):
             answer = ghl_pick("ghl/battle-exam", option, ("skip", "end the turn without playing"))
             self.ask(decider, request_id, "battle", self.battle, "card_0", answer, context={"battle_id": "b1"})
-        self.ask(decider, "004", "reward", self.offers, "reward_1", ghl_pick("ghl/card-offer", ("reward_2", "take 輝くキミへ+"), ("reward_1", "take 笑顔の基本")))
-        self.assertEqual(self.prompts, [])
-        # 决策者重启：摘要从决策日志恢复，模型下次被问（相谈）时看到这些决策。
+        self.take_reward(decider, "004")
+        self.assertEqual(self.calls, [])
+        # 决策者重启：决策记录从决策日志恢复，新会话（相谈）附上最近的全部决策。
         decider = self.decider()
         self.ask(decider, "005", "consult", self.consult, "wait", context={"session_key": "consult-1"})
         expected = [
             "- week: Vi by GHL (Legend lesson Vi (SP): 8 turns, clear 85)",
             "- battle b1: 2 actions (GHL 2); drinks used: ミックススムージー",
-            "- reward: reward_2 by GHL (take 輝くキミへ+)",
+            self.reward,
         ]
-        self.assertEqual(summary_lines(self.prompts[0]), expected)
-        # 模型作答后清空：此后只列新的决策，包括模型答复无效时的 fallback。
-        self.answers = [{"choice": "zzz", "reason": "?"}]
+        self.assertEqual(summary_lines(self.calls[0]["prompt"]), expected)
+        # 续接的会话只列它尚未见过的决策，包括模型答复无效时的 fallback。
+        self.answers = ["zzz"]
         self.ask(decider, "006", "consult", self.consult, "wait", context={"session_key": "consult-1"})
-        self.assertEqual(summary_lines(self.prompts[1]), [])
         self.ask(decider, "007", "class_option", self.classes, "Vo", ghl_pick("ghl/week", ("上课:Vi", "class main (Vi): +150 Vi"), ("上课:Vo", "class main (Vo)")))
         self.ask(decider, "008", "consult", self.consult, "wait", context={"session_key": "consult-1"})
-        expected = ["- consult: wait by fallback (等待画面变化; model answered unknown id 'zzz')", "- class_option: Vi by GHL (class main (Vi): +150 Vi)"]
-        self.assertEqual(summary_lines(self.prompts[2]), expected)
         self.ask(decider, "009", "consult", self.consult, "wait", context={"session_key": "consult-1"})
-        self.assertEqual(summary_lines(self.prompts[3]), [])
+        expected = [
+            "- consult: wait by fallback (等待画面变化; model answered unknown id 'zzz')",
+            "- class_option: Vi by GHL (class main (Vi): +150 Vi)",
+        ]
+        self.assertEqual(self.summaries()[1:], [[], expected, []])
+        self.assertEqual([call["resume"] for call in self.calls], [False, True, True, True])
+
+    def test_each_session_sees_what_it_missed(self):
+        # GHL 选了奖励，随后 GHL 没有作答的一手战斗问了模型（战斗会话）；之后续接的 campaign 会话仍看到这个奖励。
+        decider = self.decider()
+        self.ask(decider, "001", "week", self.week, "rest")
+        self.take_reward(decider, "002")
+        self.ask(decider, "003", "battle", self.battle, "card_0", context={"battle_id": "b1"})
+        self.ask(decider, "004", "week", self.week, "rest")
+        self.assertEqual(self.summaries(), [[], [self.reward], [self.reward]])
+        self.assertEqual([call["resume"] for call in self.calls], [False, False, True])
+        # 战斗有新的行动时整行以新的编号重新列出，见过旧版本的会话再次看到它。
+        play = ghl_pick("ghl/battle-exam", ("card_0", "play 先へ進む姿+"), ("skip", "end the turn without playing"))
+        for battle_id, week_id in (("005", "006"), ("007", "008")):
+            self.ask(decider, battle_id, "battle", self.battle, "card_0", play, context={"battle_id": "b2"})
+            self.ask(decider, week_id, "week", self.week, "rest")
+        battles = [["- battle b2: 1 action (GHL 1); no drinks used"], ["- battle b2: 2 actions (GHL 2); no drinks used"]]
+        self.assertEqual(self.summaries()[3:], battles)
+
+    def test_new_session_gets_the_full_list(self):
+        # 满 --session-turns 次或调用失败后另开新会话：没有对话记录，附上最近的全部决策。
+        decider = self.decider("--session-turns", "2")
+        self.take_reward(decider, "001")
+        self.answers = ["wait", "wait", "wait", None]
+        for request_id in ("002", "003", "004", "005", "006"):
+            self.ask(decider, request_id, "consult", self.consult, "wait", context={"session_key": "consult-1"})
+        failed = "- consult: wait by fallback (等待画面变化; decider error: claude did not answer within 420 s)"
+        self.assertEqual([call["resume"] for call in self.calls], [False, True, False, True, False])
+        self.assertEqual(self.summaries(), [[self.reward], [], [self.reward], [], [self.reward, failed]])
 
     def test_summary_is_bounded(self):
         decider = self.decider()
         request = {"id": "x", "kind": "week", "candidates": self.week}
-        for _ in range(HANDOFF_LINES + 5):
+        for _ in range(HANDOFF_KEEP + 5):
             decider.note_handoff(request, {"choice": "Vi", "reason": "GHL decider p=0.80: " + "x" * 400, "source": "ghl"})
+        # 内存中只留 HANDOFF_KEEP 条；新会话只列最近的 HANDOFF_LINES 条，其余（含已丢弃的）记为省略。
+        self.assertEqual(len(decider.handoff), HANDOFF_KEEP)
         lines = summary_lines(decider.handoff_text())
         self.assertEqual(len(lines), HANDOFF_LINES + 1)
-        self.assertEqual(lines[0], "- (5 earlier decisions omitted)")
+        self.assertEqual(lines[0], f"- ({HANDOFF_KEEP + 5 - HANDOFF_LINES} earlier decisions omitted)")
         self.assertTrue(all(len(line) == len("- ") + HANDOFF_LINE_CHARS for line in lines[1:]))
+        # 见过前面各条的会话只列其后的决策。
+        self.assertEqual(len(summary_lines(decider.handoff_text(HANDOFF_KEEP + 2))), 3)
 
 
 if __name__ == "__main__":

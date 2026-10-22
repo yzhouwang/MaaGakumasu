@@ -17,8 +17,10 @@ Agent 只等 config/decider.json 的 timeout_s 秒（--agent-timeout 可覆盖�
 或已超过该时间）不再作答，只记一行日志：否则决策者中断或重启后，积压的旧请求各要等 GHL、问模型，正在等待的请求也会超时。
 GHL 的等待从请求提出时算起，模型调用不超过 Agent 剩余的等待时间（留出余量），答复不会在 Agent 放弃之后才到。
 
-模型的会话与备注不知道 GHL 和 fallback 作出的决策：下次问模型时，提示中附上自模型上次作答以来的这些决策
-（周、奖励与职业课等各一行，战斗每场一行：行动数与使用的饮料）；决策者重启后从 decisions.jsonl 恢复。
+模型的会话与备注不知道 GHL 和 fallback 作出的决策：这些决策按顺序编号记录（周、奖励与职业课等各一行，战斗每场一行：
+行动数与使用的饮料，有新的行动时以新的编号移到末尾），问模型时附上该会话尚未见过的部分。每个会话键记下它见过的编号，
+作答有效后更新；另开新会话（首次调用、满 --session-turns 次或上次调用失败后）时没有对话记录，附上最近的全部决策。
+决策者重启后所有会话都是新会话，决策记录从 decisions.jsonl 恢复。
 """
 
 import os
@@ -38,9 +40,13 @@ CONFIG_PATH = ROOT / "config" / "decider.json"
 # 答复至少在 Agent 放弃前这么多秒写入；剩余时间不足 MIN_MODEL_S 秒时不再问模型，直接回答 fallback。
 AGENT_MARGIN_S = 5
 MIN_MODEL_S = 10
-# 提示中的决策摘要（Decider.handoff_text）最多保留的行数与每行的字数。
+# 提示中的决策摘要（Decider.handoff_text）最多列出的行数与每行的字数，以及内存中保留的决策记录条数。
 HANDOFF_LINES = 30
 HANDOFF_LINE_CHARS = 160
+HANDOFF_KEEP = 500
+HANDOFF_HEADER = (
+    "Decided without you and not yet in this conversation, oldest first (GHL: GHL's decider model; fallback: the old rule-based choice):"
+)
 # GHL 答复的理由为「GHL <策略>: <选项说明>」（见 ghl_choice），摘要只取选项说明；战斗中饮料的选项说明为「use drink <名称>」。
 GHL_REASON_PREFIX = re.compile(r"^GHL [^:]*: ")
 GHL_DRINK = re.compile(r"use drink ([^;]+)")
@@ -155,6 +161,11 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def handoff_count(entry: dict) -> int:
+    """一条决策记录包含的决策数：战斗为其行动数，其余为 1。"""
+    return sum(entry["sources"].values()) if "battle" in entry else 1
+
+
 class BattleReader:
     """复用采集分支的离线识别：手牌名称/库效果与战斗 HUD。"""
 
@@ -213,8 +224,10 @@ class Decider:
         self.agent_timeout = agent_timeout() if args.agent_timeout is None else args.agent_timeout
         # Agent 已放弃、不再作答的请求（文件名），每个只记一次日志
         self.skipped = set()
-        # 模型上次作答以来 GHL 与 fallback 的决策（见 note_handoff），以及超出行数上限而省略的决策数
-        self.handoff, self.handoff_omitted = [], 0
+        # GHL 与 fallback 的决策记录（见 note_handoff），按编号排序；handoff_seen 为各会话键已见到的编号。
+        # 超出 HANDOFF_KEEP 条时丢弃最早的记录，handoff_dropped 与 handoff_floor 为丢弃的决策数与最后丢弃的编号。
+        self.handoff, self.handoff_seq, self.handoff_seen = [], 0, {}
+        self.handoff_dropped, self.handoff_floor = 0, 0
         self.load_handoff()
 
     def pending(self) -> list:
@@ -254,7 +267,8 @@ class Decider:
         print(f"[{path.stem}] {request.get('kind', '?')} 跳过：{why}", flush=True)
         return True
 
-    def prompt_for(self, request: dict, reading: dict) -> str:
+    def prompt_for(self, request: dict, reading: dict, mark: int | None = None) -> str:
+        """提示正文；mark 为该会话已见到的决策编号（见 handoff_text）。"""
         lines = [f"Decision kind: {request['kind']}", f"Screenshot: {request['frame']}"]
         for name, frame in (request.get("extra_frames") or {}).items():
             lines.append(f"Detail screenshot {name}: {frame}")
@@ -279,26 +293,31 @@ class Decider:
         lines.append(f"Fallback (old rule-based choice): {request.get('fallback')}")
         if self.notes:
             lines.append("Your notes so far: " + " | ".join(self.notes[-20:]))
-        handoff = self.handoff_text()
+        handoff = self.handoff_text(mark)
         if handoff:
             lines.append(handoff)
         return "\n".join(lines)
 
     def note_handoff(self, request: dict, response: dict):
-        """记下模型以外（GHL、fallback）的决策，下次问模型时附在提示中；模型作答后清空。"""
+        """
+        记下模型以外（GHL、fallback）的决策：以新的编号排在末尾，问模型时列出该会话尚未见过的部分（见 handoff_text）。
+
+        战斗每场一条记录，有新的行动时更新并以新的编号移到末尾，见过旧版本的会话会再次看到整行。模型自己的决策不记录。
+        """
         source = response.get("source")
         if source == "model":
-            self.handoff, self.handoff_omitted = [], 0
             return
         who = "GHL" if source == "ghl" else str(source)
         choice = response.get("choice")
         reason = response.get("reason") or ""
         if request.get("kind") == "battle":
-            # 战斗每场一行：各来源的行动数与使用的饮料（GHL 的选项说明中有饮料名称）
+            # 各来源的行动数与使用的饮料（GHL 的选项说明中有饮料名称）
             battle = (request.get("context") or {}).get("battle_id") or "?"
-            if not self.handoff or self.handoff[-1].get("battle") != battle:
-                self.handoff.append({"battle": battle, "sources": {}, "drinks": []})
-            entry = self.handoff[-1]
+            entry = next((item for item in reversed(self.handoff) if item.get("battle") == battle), None)
+            if entry:
+                self.handoff.remove(entry)
+            else:
+                entry = {"battle": battle, "sources": {}, "drinks": []}
             entry["sources"][who] = entry["sources"].get(who, 0) + 1
             if str(choice).startswith("drink_"):
                 drink = GHL_DRINK.search(reason) if source == "ghl" else None
@@ -310,30 +329,42 @@ class Decider:
                 label = next((item.get("label", "") for item in request.get("candidates") or [] if item.get("id") == choice), "")
                 detail = "; ".join(text for text in (label, reason) if text)
             line = f"{request.get('kind')}: {choice or 'none'} by {who}"
-            self.handoff.append({"line": f"{line} ({detail})" if detail else line})
-        while len(self.handoff) > HANDOFF_LINES:
+            entry = {"line": f"{line} ({detail})" if detail else line}
+        self.handoff_seq += 1
+        entry["seq"] = self.handoff_seq
+        self.handoff.append(entry)
+        if len(self.handoff) > HANDOFF_KEEP:
             dropped = self.handoff.pop(0)
-            self.handoff_omitted += sum(dropped["sources"].values()) if "battle" in dropped else 1
+            self.handoff_dropped += handoff_count(dropped)
+            self.handoff_floor = dropped["seq"]
 
-    def handoff_text(self) -> str:
-        """提示中的决策摘要：模型上次作答以来 GHL 与 fallback 的决策，周、奖励与职业课等各一行，战斗每场一行；没有时为空。"""
-        if not self.handoff:
+    def handoff_text(self, mark: int | None = None) -> str:
+        """
+        提示中的决策摘要：编号大于 mark 的决策记录（mark 为 None 时为全部，给没有对话记录的新会话），由旧到新，
+        至多列出最近的 HANDOFF_LINES 条，其余只记省略的决策数；没有时为空。周、奖励与职业课等各一行，战斗每场一行。
+        """
+        mark = mark or 0
+        unseen = [entry for entry in self.handoff if entry["seq"] > mark]
+        if not unseen:
             return ""
-        lines = ["Decided without you since your last answer, oldest first (GHL: GHL's decider model; fallback: the old rule-based choice):"]
-        if self.handoff_omitted:
-            lines.append(f"- ({self.handoff_omitted} earlier decisions omitted)")
-        for entry in self.handoff:
+        # mark 早于内存中最早的记录时，已丢弃的决策都算作省略（可能多算 mark 之前丢弃的部分）
+        omitted = sum(handoff_count(entry) for entry in unseen[:-HANDOFF_LINES]) + (self.handoff_dropped if mark < self.handoff_floor else 0)
+        lines = [HANDOFF_HEADER]
+        if omitted:
+            lines.append(f"- ({omitted} earlier decisions omitted)")
+        for entry in unseen[-HANDOFF_LINES:]:
             if "battle" in entry:
                 actions = ", ".join(f"{who} {count}" for who, count in entry["sources"].items())
                 drinks = ("drinks used: " + ", ".join(entry["drinks"])) if entry["drinks"] else "no drinks used"
-                line = f"battle {entry['battle']}: {sum(entry['sources'].values())} actions ({actions}); {drinks}"
+                count = handoff_count(entry)
+                line = f"battle {entry['battle']}: {count} action{'' if count == 1 else 's'} ({actions}); {drinks}"
             else:
                 line = entry["line"]
             lines.append("- " + clip(line, HANDOFF_LINE_CHARS))
         return "\n".join(lines)
 
     def load_handoff(self):
-        """从决策日志恢复决策摘要，决策者重启后不丢失；只读以换行结尾的行。"""
+        """从决策日志恢复决策记录（重启后所有会话都是新会话，各自附上最近的全部决策）；只读以换行结尾的行。"""
         try:
             text = (self.mailbox / "decisions.jsonl").read_bytes().decode("utf-8", errors="replace")
         except OSError:
@@ -345,13 +376,18 @@ class Decider:
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
 
+    def resumes(self, key: str) -> bool:
+        """下次调用是否续接 key 的会话；否则另开新会话（首次调用、满 --session-turns 次，或上次调用失败后已丢弃）。"""
+        session = self.sessions.get(key)
+        return bool(session) and session["turns"] < self.args.session_turns
+
     def call_model(self, key: str, prompt: str, timeout: float) -> dict:
         session = self.sessions.get(key)
         command = ["claude", "-p", prompt, "--model", self.args.model, "--output-format", "json", "--json-schema", json.dumps(ANSWER_SCHEMA)]
         command += ["--tools", "Read", "--strict-mcp-config", "--setting-sources", ""]
         if self.args.effort:
             command += ["--effort", self.args.effort]
-        if session and session["turns"] < self.args.session_turns:
+        if self.resumes(key):
             command += ["--resume", session["id"]]
             session["turns"] += 1
         else:
@@ -369,7 +405,7 @@ class Decider:
             if output.get("is_error") or completed.returncode != 0:
                 raise RuntimeError(f"claude failed ({completed.returncode}): {str(output.get('result') or completed.stderr)[:300]}")
         except Exception:
-            # 失败的调用可能没有建立会话（例如首次调用被中止），之后的续接会一直失败：下次另开新会话，备注与决策摘要照常附上
+            # 失败的调用可能没有建立会话（例如首次调用被中止），之后的续接会一直失败：下次另开新会话，附上备注与最近的全部决策
             self.sessions.pop(key, None)
             raise
         answer = output.get("structured_output")
@@ -427,7 +463,11 @@ class Decider:
                 reading = self.reader.read(self.mailbox / request["frame"], request["candidates"])
             except Exception as exc:
                 reading = {"error": f"vision failed: {exc}"}
-        prompt = self.prompt_for(request, reading)
+        context = request.get("context") or {}
+        key = context.get("session_key") or (context.get("battle_id") if request["kind"] == "battle" else None) or "campaign"
+        # 续接的会话只附上它尚未见过的决策；另开的新会话没有对话记录，附上最近的全部决策
+        prompt = self.prompt_for(request, reading, self.handoff_seen.get(key) if self.resumes(key) else None)
+        seen = self.handoff_seq
         response = {"id": request["id"], "choice": request.get("fallback"), "reason": "", "source": "fallback"}
         left = deadline - time.time()
         if self.args.dry_run:
@@ -435,12 +475,12 @@ class Decider:
         elif left < MIN_MODEL_S:
             response["reason"] = f"only {max(left, 0):.0f} s left before the agent stops waiting; the model was not asked"
         else:
-            context = request.get("context", {})
-            key = context.get("session_key") or (context.get("battle_id") if request["kind"] == "battle" else None) or "campaign"
             try:
                 answer = self.call_model(key, prompt, min(self.args.call_timeout, left))
                 if answer.get("choice") in ids:
                     response.update(choice=answer["choice"], reason=answer.get("reason", ""), source="model", meta=answer["_meta"])
+                    # 作答有效：该会话已见到编号 seen 及之前的决策
+                    self.handoff_seen[key] = seen
                     for axis in ("x", "y"):
                         if isinstance(answer.get(axis), int):
                             response[axis] = answer[axis]
