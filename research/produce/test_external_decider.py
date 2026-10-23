@@ -119,17 +119,18 @@ class InteractiveLoopTest(unittest.TestCase):
 
 class CustomizeLoopTest(unittest.TestCase):
     """
-    特别指导：选择结束时由本动作点击「終了」，P 点有剩余时的确认框与误开的 P 饮料详情只提供弹窗左右按钮；
-    没有有效答复时按 fallback 离开；答复期间已移动的弹窗不点击（2026-10-23 实机：通用按钮节点点了确认框的「キャンセル」，
-    淡出中的第二次点击落到饮料栏，打开的饮料详情网格点选关不掉，任务失败）。
+    特别指导：由本动作点击「終了」，P 点有剩余时的确认框与误开的 P 饮料详情只提供弹窗左右按钮，遮住「終了」的提示可点掉；
+    没有有效答复时按 fallback 离开；决策步数用完或三次没有有效答复后不再询问、直接离开；答复期间已移动的弹窗不点击
+    （2026-10-23 实机：通用按钮节点点了确认框的「キャンセル」，淡出中的第二次点击落到饮料栏，打开的饮料详情网格点选关不掉，任务失败）。
     """
 
     CANCEL = [112, 1127, 207, 66]
     CONFIRM = [401, 1127, 207, 66]
     EXIT = [586, 957, 120, 44]
+    DISMISS = produce_actions.ProduceCustomizeExternal.DISMISS
 
     class Decider:
-        """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数。"""
+        """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数；不在候选中的 id 与真实信箱一样视为没有有效答复。"""
 
         def __init__(self, answers):
             self.answers, self.requests = list(answers), []
@@ -138,17 +139,19 @@ class CustomizeLoopTest(unittest.TestCase):
             self.requests.append(([c["id"] for c in candidates], kwargs.get("fallback")))
             answer = self.answers.pop(0) if self.answers else None
             answer = answer() if callable(answer) else answer
-            return next(c for c in candidates if c["id"] == answer) if answer else None
+            return next((c for c in candidates if c["id"] == answer), None)
 
-    def run_customize(self, answers, screen="menu", confirm_on_exit=True, exit_visible=True):
+    def run_customize(self, answers, screen="menu", confirm_on_exit=True, exit_visible=True, **attrs):
         game = self.game = {"screen": screen}
         context, controller = fake_context()
         inside = lambda box, x, y: box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]
 
         def click(x, y):
             controller.clicks.append((x, y))
-            if game["screen"] == "menu" and inside(self.EXIT, x, y):
+            if game["screen"] == "menu" and exit_visible and inside(self.EXIT, x, y):
                 game["screen"] = "exit_dialog" if confirm_on_exit else "left"
+            elif game["screen"] == "message" and inside(self.DISMISS, x, y):
+                game["screen"] = "menu"
             elif game["screen"] in ("exit_dialog", "drink_popup") and inside(self.CANCEL, x, y):
                 game["screen"] = "menu"
             elif game["screen"] == "exit_dialog" and inside(self.CONFIRM, x, y):
@@ -159,6 +162,8 @@ class CustomizeLoopTest(unittest.TestCase):
         dialogs = {"exit_dialog": self.CANCEL, "drink_popup": self.CANCEL, "closing": [112, 1182, 207, 66]}
         action = produce_actions.ProduceCustomizeExternal()
         action.STEP_DELAY, action.SETTLE_S, action.SETTLE_POLL = 0, 0.05, 0
+        for name, value in attrs.items():
+            setattr(action, name, value)
         action._dialog = lambda ctx, image: list(dialogs[game["screen"]]) if game["screen"] in dialogs else None
         action._in_guide = lambda ctx, image: game["screen"] != "left"
         action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
@@ -203,10 +208,9 @@ class CustomizeLoopTest(unittest.TestCase):
             self.game["screen"] = "drink_popup"
             return "tap_grid"  # 没给坐标：无效，不点击
 
-        result, game, clicks, requests = self.run_customize(["finish", "dialog_cancel", popup_opens, None, None, None])
+        result, game, clicks, requests = self.run_customize(["finish", "dialog_cancel", popup_opens, None, None])
         self.assertTrue(result)
-        fallbacks = [fallback for _, fallback in requests]
-        self.assertEqual(fallbacks, ["finish", "dialog_confirm", "finish", "dialog_cancel", "finish", "dialog_confirm"])
+        self.assertEqual([fallback for _, fallback in requests], ["finish", "dialog_confirm", "finish", "dialog_cancel", "finish"])
         self.assertEqual(clicks, [(646, 979), (215, 1160), (215, 1160), (646, 979), (504, 1160)])
 
     def test_a_dialog_that_moved_is_not_tapped(self):
@@ -223,10 +227,33 @@ class CustomizeLoopTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(clicks, [(646, 979), (646, 979), (504, 1160)])
 
-    def test_exit_button_missing_hands_back_after_three_tries(self):
-        result, game, clicks, requests = self.run_customize(["finish", "finish", "finish"], exit_visible=False)
+    def test_the_message_over_exit_is_dismissed(self):
+        result, game, clicks, requests = self.run_customize(["dismiss", "finish", "dialog_confirm"], screen="message")
         self.assertTrue(result)
-        self.assertEqual((clicks, len(requests)), ([], 3))
+        self.assertEqual(clicks, [(360, 985), (646, 979), (504, 1160)])
+        self.assertIn("dismiss", requests[0][0])
+        self.assertNotIn("finish", requests[0][0])
+        self.assertEqual(requests[0][1], "dismiss")
+
+    def test_budget_spent_with_the_exit_dialog_open_still_confirms(self):
+        # 决策步数用完时确认框已打开：不交还主循环（通用按钮节点会点「キャンセル」），按 fallback 确认
+        result, game, clicks, requests = self.run_customize(["finish"], MAX_STEPS=1)
+        self.assertTrue(result)
+        self.assertEqual(game["screen"], "left")
+        self.assertEqual((clicks, len(requests)), ([(646, 979), (504, 1160)], 1))
+
+    def test_three_unusable_answers_then_leaves_without_asking(self):
+        # 决策者超时（None）也算：三次后不再询问，提示点掉、按「終了」、确认
+        result, game, clicks, requests = self.run_customize(["tap_grid", None, "tap_grid"], screen="message")
+        self.assertTrue(result)
+        self.assertEqual(game["screen"], "left")
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(clicks, [(360, 985), (646, 979), (504, 1160)])
+
+    def test_exit_never_visible_hands_back_after_the_leave_budget(self):
+        result, game, clicks, requests = self.run_customize([], exit_visible=False, MAX_STEPS=2, LEAVE_STEPS=2)
+        self.assertTrue(result)
+        self.assertEqual((clicks, len(requests)), ([(360, 985)] * 4, 2))
 
 
 def reward_frame(brightness, offers=3):

@@ -118,20 +118,24 @@ class ProduceCustomizeExternal(CustomAction):
     特别指导的卡牌自定义：逐步把当前画面与一组受限操作交给外部决策者，直到画面离开特别指导。
 
     可选操作只有：在卡牌网格内点选（选中卡牌，不消耗 P 点）、滚动网格、点选自定义选项、カスタマイズ、
-    実行する（消耗 P 点）、一覧に戻る、等待与结束。选择结束时由本动作点击「終了」。
+    実行する（消耗 P 点）、一覧に戻る、等待与结束（由本动作点击「終了」）；「…をカスタマイズしました」提示遮住「終了」时改为点掉提示。
     左侧为「キャンセル」的弹窗（P 点有剩余时「終了」的确认框、误开的 P 饮料详情等）打开时只提供弹窗左右两个按钮与等待：
-    弹窗按钮与最底部菜单栏同高，网格点选够不到；主循环的通用按钮节点按得分会点「キャンセル」，因此确认框由本动作处理。
-    没有有效答复时按 fallback 处理：弹窗在按过「終了」之后确认、之前关闭，其余画面结束特别指导。
+    弹窗按钮与最底部菜单栏同高，网格点选够不到；主循环的通用按钮节点按得分会点「キャンセル」，因此弹窗都由本动作处理。
+    没有有效答复时按 fallback 处理：弹窗在按过「終了」之后确认、之前关闭；「終了」可见则结束，被提示遮住则点掉提示。
+    决策步数用完或三次没有有效答复（超时、无效选项或网格外坐标）后不再询问，按同样的 fallback 离开特别指导，
+    不把未处理的弹窗或提示交还主循环。
     """
 
     GRID = [40, 625, 640, 365]
     MENU_ROIS = ([30, 470, 660, 130], [30, 775, 660, 140])
     BUTTONS = {"customize": [235, 1050, 250, 70], "execute": [372, 1050, 252, 70], "back": [90, 1050, 252, 70]}
+    # 「…をカスタマイズしました」提示条的上部（提示条约在 y 945–1115，遮住「終了」）；列表画面此处为空白
+    DISMISS = [330, 970, 60, 30]
     # 弹窗左下的「キャンセル」；弹窗居中，右侧按钮与之左右对称
     DIALOG_CANCEL = {"recognition": "TemplateMatch", "roi": [40, 1000, 400, 270], "template": "cancel.png", "threshold": 0.9}
     # 左上角的特别指导标题，与 ProduceGuideScreen 相同（另设节点：那个节点识别成功时会在控制台提示「事件: 特别指导」）
     GUIDE_HEADER = {"recognition": "TemplateMatch", "roi": [0, 0, 260, 170], "template": "produce/guide_header.png", "threshold": 0.85}
-    MAX_STEPS = 40
+    MAX_STEPS, LEAVE_STEPS = 40, 15
     STEP_DELAY = 1.5
     SETTLE_S, SETTLE_POLL = 6.0, 0.5
 
@@ -140,8 +144,8 @@ class ProduceCustomizeExternal(CustomAction):
         if not decider:
             return True
         session_key = f"customize-{time.strftime('%Y%m%d-%H%M%S')}"
-        invalid, exiting = 0, False
-        for step in range(self.MAX_STEPS):
+        invalid, exiting, leaving = 0, False, False
+        for step in range(self.MAX_STEPS + self.LEAVE_STEPS):
             if context.tasker.stopping:
                 return False
             image = context.tasker.controller.post_screencap().wait().get()
@@ -149,27 +153,26 @@ class ProduceCustomizeExternal(CustomAction):
             dialog = self._dialog(context, image)
             if not dialog and not self._in_guide(context, image):
                 return True
+            exit_box = None if dialog else self._exit_button(context, image)
             if dialog:
                 candidates, fallback = self._dialog_candidates(dialog), "dialog_confirm" if exiting else "dialog_cancel"
             else:
-                candidates, fallback = self._screen_candidates(context, image), "finish"
-            chosen = decider.ask(
-                "customize", image, candidates, fallback=fallback,
-                context={"session_key": session_key, "step": step}, stopping=lambda: context.tasker.stopping,
-            )
-            if context.tasker.stopping:
-                return False
+                candidates, fallback = self._screen_candidates(context, image, exit_box), "finish" if exit_box else "dismiss"
+            chosen = None
+            if step < self.MAX_STEPS and invalid < 3:
+                chosen = decider.ask(
+                    "customize", image, candidates, fallback=fallback,
+                    context={"session_key": session_key, "step": step}, stopping=lambda: context.tasker.stopping,
+                )
+                if context.tasker.stopping:
+                    return False
+                invalid += chosen is None
+            elif not leaving:
+                leaving = True
+                logger.warning("自定义：决策步数用完或三次没有有效答复，不再询问，直接离开特别指导")
             chosen = chosen or next(c for c in candidates if c["id"] == fallback)
             action = chosen["id"]
             if action == "finish":
-                exit_box = self._exit_button(context, image)
-                if not exit_box:
-                    invalid += 1
-                    logger.warning("自定义：画面上没有「終了」")
-                    if invalid >= 3:
-                        return True
-                    time.sleep(self.STEP_DELAY)
-                    continue
                 self._click(context, exit_box)
                 exiting = True
                 # P 点有剩余时弹出确认框，否则画面直接离开特别指导
@@ -180,6 +183,7 @@ class ProduceCustomizeExternal(CustomAction):
                 now = self._dialog(context, context.tasker.controller.post_screencap().wait().get())
                 if not now or max(abs(a - b) for a, b in zip(now, dialog)) > 4:
                     logger.warning(f"自定义：弹窗已变化（{dialog} → {now}），不点击")
+                    time.sleep(self.SETTLE_POLL)
                     continue
                 self._click(context, chosen["box"])
                 if action == "dialog_confirm":
@@ -194,8 +198,6 @@ class ProduceCustomizeExternal(CustomAction):
                 if x is None or not (gx <= x <= gx + gw and gy <= y <= gy + gh):
                     invalid += 1
                     logger.warning(f"自定义：网格坐标无效 {chosen.get('point')}")
-                    if invalid >= 3:
-                        return True
                     continue
                 context.tasker.controller.post_click(x, y).wait()
             elif action in ("scroll_down", "scroll_up"):
@@ -206,24 +208,29 @@ class ProduceCustomizeExternal(CustomAction):
             else:
                 self._click(context, chosen["box"])
             time.sleep(self.STEP_DELAY)
-        logger.warning("自定义步数达到上限，结束特别指导")
+        logger.warning("自定义：未能离开特别指导，交还主循环")
         return True
 
-    def _screen_candidates(self, context, image):
-        """特别指导画面（无弹窗）的候选：网格点选与滚动、自定义选项、底部按钮、等待与结束。"""
+    def _screen_candidates(self, context, image, exit_box):
+        """
+        特别指导画面（无弹窗）的候选：网格点选与滚动、自定义选项、底部按钮、等待，
+        以及「終了」可见时结束、被提示遮住时点掉提示。
+        """
         candidates = [
             {"id": "tap_grid", "label": "点选卡牌网格中的一张卡（答复须给出 x、y，限网格区域内；只选中，不消耗 P 点）", "box": self.GRID},
             {"id": "scroll_down", "label": "向下滚动卡牌网格", "box": self.GRID},
             {"id": "scroll_up", "label": "向上滚动卡牌网格", "box": self.GRID},
         ]
         candidates += self._menu_options(context, image)
-        return candidates + [
+        candidates += [
             {"id": "customize", "label": "カスタマイズ（进入确认画面）", "box": self.BUTTONS["customize"]},
             {"id": "execute", "label": "実行する（确认执行，消耗 P 点）", "box": self.BUTTONS["execute"]},
             {"id": "back", "label": "一覧に戻る（取消并返回列表）", "box": self.BUTTONS["back"]},
             {"id": "wait", "label": "等待画面变化", "box": [0, 0, 0, 0]},
-            {"id": "finish", "label": "结束特别指导（按「終了」；P 点有剩余时游戏会弹出确认框）", "box": [0, 0, 0, 0]},
         ]
+        if exit_box:
+            return candidates + [{"id": "finish", "label": "结束特别指导（按「終了」；P 点有剩余时游戏会弹出确认框）", "box": list(exit_box)}]
+        return candidates + [{"id": "dismiss", "label": "点掉画面下方遮住「終了」的提示（「…をカスタマイズしました」）", "box": self.DISMISS}]
 
     @staticmethod
     def _dialog_candidates(cancel):
