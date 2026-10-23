@@ -177,15 +177,19 @@ class ProduceCustomizeExternal(CustomAction):
                 ProduceCustomizeExternal._overlay_rounds = 0
             if state == "overlay":
                 # 盖住特别指导的面板不问决策者，点它底部正中的「×」；关不掉时交还主循环，累计多次后让任务失败
-                overlays += 1
                 close = self._overlay_close(context, image)
                 if close:
                     logger.warning(f"自定义：关闭盖住特别指导的面板 {close}")
                     self._click(context, close)
                     self._settle(context, lambda frame: self._dialog(context, frame) or self.guide_state(context, frame) != "overlay")
+                    after = context.tasker.controller.post_screencap().wait().get()
+                    if self._dialog(context, after) or self.guide_state(context, after) != "overlay":
+                        # 面板已关：下一步按新画面处理（回到特别指导画面时清零），这次不算失败
+                        continue
                 else:
                     logger.warning("自定义：特别指导被盖住，找不到关闭按钮")
                     time.sleep(self.STEP_DELAY)
+                overlays += 1
                 if overlays >= self.OVERLAY_TRIES:
                     ProduceCustomizeExternal._overlay_rounds += 1
                     if ProduceCustomizeExternal._overlay_rounds >= self.OVERLAY_ROUNDS:

@@ -147,8 +147,8 @@ class CustomizeLoopTest(unittest.TestCase):
             answer = answer() if callable(answer) else answer
             return next((c for c in candidates if c["id"] == answer), None)
 
-    def run_customize(self, answers, screen="menu", confirm_on_exit=True, exit_visible=True, **attrs):
-        game = self.game = {"screen": screen}
+    def run_customize(self, answers, screen="menu", confirm_on_exit=True, exit_visible=True, misses=0, **attrs):
+        game = self.game = {"screen": screen, "misses": misses}
         context, controller = fake_context()
         inside = lambda box, x, y: box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]
 
@@ -158,7 +158,7 @@ class CustomizeLoopTest(unittest.TestCase):
                 game["screen"] = "exit_dialog" if confirm_on_exit else "left"
             elif game["screen"] == "message" and inside(self.DISMISS, x, y):
                 game["screen"] = "menu"
-            elif game["screen"] == "log_panel" and inside(self.PANEL_CLOSE, x, y):
+            elif game["screen"] in ("log_panel", "slow_panel") and inside(self.PANEL_CLOSE, x, y):
                 game["screen"] = "menu"
             elif game["screen"] in ("exit_dialog", "drink_popup") and inside(self.CANCEL, x, y):
                 game["screen"] = "menu"
@@ -174,8 +174,17 @@ class CustomizeLoopTest(unittest.TestCase):
             setattr(action, name, value)
         action._dialog = lambda ctx, image: list(dialogs[game["screen"]]) if game["screen"] in dialogs else None
         # 标题：弹窗与面板盖住时为 overlay（_dialog 先认出弹窗，弹窗时不看标题）
-        action.guide_state = lambda ctx, image: {"left": "left", "log_panel": "overlay", "stuck_panel": "overlay"}.get(game["screen"], "screen")
-        action._overlay_close = lambda ctx, image: list(self.PANEL_CLOSE) if game["screen"] == "log_panel" else None
+        overlays = {"log_panel", "stuck_panel", "slow_panel"}
+        action.guide_state = lambda ctx, image: "left" if game["screen"] == "left" else "overlay" if game["screen"] in overlays else "screen"
+
+        def overlay_close(ctx, image):
+            # slow_panel：前 misses 次找不到「×」
+            if game["screen"] == "slow_panel" and game["misses"] > 0:
+                game["misses"] -= 1
+                return None
+            return list(self.PANEL_CLOSE) if game["screen"] in ("log_panel", "slow_panel") else None
+
+        action._overlay_close = overlay_close
         action._drink_detail = lambda ctx, image: game["screen"] == "drink_popup"
         action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
         action._menu_options = lambda ctx, image: []
@@ -277,6 +286,16 @@ class CustomizeLoopTest(unittest.TestCase):
         # 每轮交还主循环后主循环会立刻再进来：第三轮仍关不掉就让任务失败，等人处理
         results = [self.run_customize([], screen="stuck_panel")[0] for _ in range(3)]
         self.assertEqual(results, [True, True, False])
+
+    def test_a_panel_closed_on_the_last_try_does_not_count(self):
+        # 两轮关不掉之后，第三轮第五次才找到「×」并关掉：不算失败，不停止任务，回到画面后清零
+        self.run_customize([], screen="stuck_panel")
+        self.run_customize([], screen="stuck_panel")
+        result, game, clicks, requests = self.run_customize(["finish", "dialog_confirm"], screen="slow_panel", misses=4)
+        self.assertTrue(result)
+        self.assertEqual(game["screen"], "left")
+        self.assertEqual(clicks, [(360, 1160), (646, 979), (504, 1160)])
+        self.assertEqual(produce_actions.ProduceCustomizeExternal._overlay_rounds, 0)
 
     def test_the_panel_rounds_reset_on_a_clear_screen(self):
         self.run_customize([], screen="stuck_panel")
