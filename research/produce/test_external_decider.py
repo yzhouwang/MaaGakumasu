@@ -117,6 +117,118 @@ class InteractiveLoopTest(unittest.TestCase):
         self.assertEqual(decider.requests, [])
 
 
+class CustomizeLoopTest(unittest.TestCase):
+    """
+    特别指导：选择结束时由本动作点击「終了」，P 点有剩余时的确认框与误开的 P 饮料详情只提供弹窗左右按钮；
+    没有有效答复时按 fallback 离开；答复期间已移动的弹窗不点击（2026-10-23 实机：通用按钮节点点了确认框的「キャンセル」，
+    淡出中的第二次点击落到饮料栏，打开的饮料详情网格点选关不掉，任务失败）。
+    """
+
+    CANCEL = [112, 1127, 207, 66]
+    CONFIRM = [401, 1127, 207, 66]
+    EXIT = [586, 957, 120, 44]
+
+    class Decider:
+        """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数。"""
+
+        def __init__(self, answers):
+            self.answers, self.requests = list(answers), []
+
+        def ask(self, kind, image, candidates, **kwargs):
+            self.requests.append(([c["id"] for c in candidates], kwargs.get("fallback")))
+            answer = self.answers.pop(0) if self.answers else None
+            answer = answer() if callable(answer) else answer
+            return next(c for c in candidates if c["id"] == answer) if answer else None
+
+    def run_customize(self, answers, screen="menu", confirm_on_exit=True, exit_visible=True):
+        game = self.game = {"screen": screen}
+        context, controller = fake_context()
+        inside = lambda box, x, y: box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]
+
+        def click(x, y):
+            controller.clicks.append((x, y))
+            if game["screen"] == "menu" and inside(self.EXIT, x, y):
+                game["screen"] = "exit_dialog" if confirm_on_exit else "left"
+            elif game["screen"] in ("exit_dialog", "drink_popup") and inside(self.CANCEL, x, y):
+                game["screen"] = "menu"
+            elif game["screen"] == "exit_dialog" and inside(self.CONFIRM, x, y):
+                game["screen"] = "left"
+            return SimpleNamespace(wait=lambda: None)
+
+        controller.post_click = click
+        dialogs = {"exit_dialog": self.CANCEL, "drink_popup": self.CANCEL, "closing": [112, 1182, 207, 66]}
+        action = produce_actions.ProduceCustomizeExternal()
+        action.STEP_DELAY, action.SETTLE_S, action.SETTLE_POLL = 0, 0.05, 0
+        action._dialog = lambda ctx, image: list(dialogs[game["screen"]]) if game["screen"] in dialogs else None
+        action._in_guide = lambda ctx, image: game["screen"] != "left"
+        action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
+        action._menu_options = lambda ctx, image: []
+        decider = self.Decider(answers)
+        original = produce_actions.ExternalDecider
+        produce_actions.ExternalDecider = SimpleNamespace(load=lambda: decider)
+        try:
+            result = action.run(context, None)
+        finally:
+            produce_actions.ExternalDecider = original
+        return result, game, controller.clicks, decider.requests
+
+    def test_finish_presses_exit_and_the_confirmation_is_asked(self):
+        result, game, clicks, requests = self.run_customize(["finish", "dialog_confirm"])
+        self.assertTrue(result)
+        self.assertEqual(game["screen"], "left")
+        self.assertEqual(clicks, [(646, 979), (504, 1160)])
+        self.assertEqual(requests[1], (["dialog_cancel", "dialog_confirm", "wait"], "dialog_confirm"))
+
+    def test_leaving_without_a_confirmation(self):
+        result, game, clicks, requests = self.run_customize(["finish"], confirm_on_exit=False)
+        self.assertTrue(result)
+        self.assertEqual((clicks, len(requests)), ([(646, 979)], 1))
+
+    def test_a_drink_popup_is_closed_with_its_cancel(self):
+        result, game, clicks, requests = self.run_customize(["dialog_cancel", "finish", "dialog_confirm"], screen="drink_popup")
+        self.assertTrue(result)
+        self.assertEqual(clicks, [(215, 1160), (646, 979), (504, 1160)])
+        self.assertEqual(requests[0][1], "dialog_cancel")
+
+    def test_no_answer_closes_a_popup_then_leaves(self):
+        # 没按过「終了」时弹窗按 fallback 关闭；按过之后确认
+        result, game, clicks, requests = self.run_customize([None, None, None], screen="drink_popup")
+        self.assertTrue(result)
+        self.assertEqual(clicks, [(215, 1160), (646, 979), (504, 1160)])
+        self.assertEqual([fallback for _, fallback in requests], ["dialog_cancel", "finish", "dialog_confirm"])
+
+    def test_cancelling_the_exit_dialog_stops_exiting(self):
+        # 取消「終了」的确认框后，之后误开的饮料详情没有答复时关闭而不是确认
+        def popup_opens():
+            self.game["screen"] = "drink_popup"
+            return "tap_grid"  # 没给坐标：无效，不点击
+
+        result, game, clicks, requests = self.run_customize(["finish", "dialog_cancel", popup_opens, None, None, None])
+        self.assertTrue(result)
+        fallbacks = [fallback for _, fallback in requests]
+        self.assertEqual(fallbacks, ["finish", "dialog_confirm", "finish", "dialog_cancel", "finish", "dialog_confirm"])
+        self.assertEqual(clicks, [(646, 979), (215, 1160), (215, 1160), (646, 979), (504, 1160)])
+
+    def test_a_dialog_that_moved_is_not_tapped(self):
+        # 答复期间确认框开始淡出（下移）、随后消失：两次都不点击，重新询问后再结束
+        def fading():
+            self.game["screen"] = "closing"
+            return "dialog_confirm"
+
+        def gone():
+            self.game["screen"] = "menu"
+            return "dialog_cancel"
+
+        result, game, clicks, requests = self.run_customize(["finish", fading, gone, "finish", "dialog_confirm"])
+        self.assertTrue(result)
+        self.assertEqual(clicks, [(646, 979), (646, 979), (504, 1160)])
+
+    def test_exit_button_missing_hands_back_after_three_tries(self):
+        result, game, clicks, requests = self.run_customize(["finish", "finish", "finish"], exit_visible=False)
+        self.assertTrue(result)
+        self.assertEqual((clicks, len(requests)), ([], 3))
+
+
 def reward_frame(brightness, offers=3):
     """合成奖励画面：详情面板亮度与可定位的候选数（候选定位由测试替换）。"""
     image = np.full((1280, 720, 3), brightness, dtype=np.uint8)
