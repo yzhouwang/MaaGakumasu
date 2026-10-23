@@ -159,17 +159,22 @@ class CustomizeFieldsTest(unittest.TestCase):
 class SelectedOptionTest(unittest.TestCase):
     ORANGE = (50, 150, 255)  # BGR
 
-    def bracket_image(self, slot):
-        image = np.full((1280, 720, 3), (200, 210, 220), dtype=np.uint8)
+    def bracket_image(self, slot, orange=ORANGE, background=(200, 210, 220)):
+        image = np.full((1280, 720, 3), background, dtype=np.uint8)
         left = OPTION_LEFT[slot]
         for top, bottom in SELECTION_BANDS:
             for x in (left - 12, left + OPTION_WIDTH - 26):
-                image[top + 4 : bottom - 2, x : x + 38] = self.ORANGE
+                image[top + 4 : bottom - 2, x : x + 38] = orange
         return image
 
     def test_brackets_mark_the_option(self):
         for slot in range(len(OPTION_LEFT)):
             self.assertEqual(selected_option(self.bracket_image(slot)), slot)
+
+    def test_brackets_on_a_dimmed_screen(self):
+        # 提示弹出时画面变暗：括号约为 (61, 127, 205)（BGR），背景同样变暗。
+        for slot in range(len(OPTION_LEFT)):
+            self.assertEqual(selected_option(self.bracket_image(slot, (61, 127, 205), (160, 168, 176))), slot)
 
     def test_no_brackets(self):
         self.assertIsNone(selected_option(np.full((1280, 720, 3), (200, 210, 220), dtype=np.uint8)))

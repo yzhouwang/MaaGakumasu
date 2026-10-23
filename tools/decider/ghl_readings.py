@@ -259,7 +259,8 @@ def selected_option(array):
     for top, bottom in SELECTION_BANDS:
         band = array[top:bottom].astype(int)
         blue, green, red = band[..., 0], band[..., 1], band[..., 2]
-        orange = (red > 220) & (green > 110) & (green < 200) & (blue < 110)
+        # 按色比判断：提示（「スキルカードカスタマイズ時…」等）弹出时整个画面变暗，括号由 (255, 156, 70) 变为约 (205, 127, 61)（RGB）。
+        orange = (red > 170) & (green > 0.45 * red) & (green < 0.75 * red) & (blue < 0.4 * red)
         columns.append(orange.any(axis=0).nonzero()[0])
     if any(len(found) == 0 for found in columns):
         return None
