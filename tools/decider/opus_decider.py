@@ -319,7 +319,7 @@ class Decider:
             lines.append(handoff)
         if plan:
             lines.append(
-                "GHL's plan for this visit (GHL holds the exact deck, drinks and P and decides this visit; you carry it out):\n"
+                "GHL's plan for this visit (GHL tracks the deck, drinks and P from the screens and decides this visit; you carry it out):\n"
                 + str(plan.get("text", "")).strip()
                 + "\nCarry out the plan's steps in order. Do not buy, upgrade, delete or customize anything the plan does not name."
                 " If a step cannot be done on screen (the card or item is not there, P is short), skip it and say so in your reason."
@@ -454,6 +454,8 @@ class Decider:
         GHL 对本次相谈或特别指导的计划（按请求的 session_key）；没有或 GHL 不作计划（skip）时为 None。
 
         计划在访问的第一步（step 0）由实况桥写下：第一步等到 until（请求提出后 --ghl-wait 秒，不晚于 Agent 放弃），之后各步只读一次。
+        之后各步只沿用第一步已采用的计划（第一步的答复记有 ghl_plan）：第一步没有等到计划时模型已自行开始，晚到的计划
+        是按开始前的状态算的，不再接手。
         """
         context = request.get("context") or {}
         key = context.get("session_key")
@@ -462,8 +464,18 @@ class Decider:
         while True:
             plan = read_ghl_plans(self.mailbox / "ghl" / "plans.jsonl").get(key)
             if plan or context.get("step") != 0 or time.time() >= until:
-                return None if not plan or plan.get("skip") else plan
+                break
             time.sleep(0.2)
+        if not plan or plan.get("skip"):
+            return None
+        if context.get("step") != 0:
+            try:
+                first = json.loads((self.mailbox / "responses" / f"{plan.get('id')}.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                first = {}
+            if first.get("ghl_plan") != key:
+                return None
+        return plan
 
     def ghl_answer(self, request: dict, until: float):
         """等 GHL 实况桥对该请求的选择，至多等到 until（请求提出后 --ghl-wait 秒，且不晚于 Agent 放弃），返回 (答复, 未采用的原因)。"""

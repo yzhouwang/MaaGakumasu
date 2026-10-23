@@ -576,7 +576,7 @@ class GhlPlanTest(HandoffTest):
         return {path.stem: json.loads(path.read_text(encoding="utf-8")) for path in (self.mailbox / "responses").glob("*.json")}
 
     def test_plan_reaches_every_step_of_its_visit(self):
-        self.write_plan("consult-1")
+        self.write_plan("consult-1", id="001")
         decider = self.decider()
         for request_id, step in (("001", 0), ("002", 1)):
             self.ask(decider, request_id, "consult", self.consult, "done", context={"session_key": "consult-1", "step": step})
@@ -593,6 +593,15 @@ class GhlPlanTest(HandoffTest):
         self.addCleanup(writer.cancel)
         self.ask(decider, "001", "customize", self.consult, "done", context={"session_key": "customize-1", "step": 0})
         self.assertIn(self.plan_text, self.calls[-1]["prompt"])
+
+    def test_a_plan_written_after_the_first_step_does_not_take_over(self):
+        # The first step had no plan in time: the model began on its own, so a later plan (computed before that) is not used.
+        decider = self.decider()
+        self.ask(decider, "001", "consult", self.consult, "done", context={"session_key": "consult-1", "step": 0})
+        self.write_plan("consult-1", id="001")
+        self.ask(decider, "002", "consult", self.consult, "done", context={"session_key": "consult-1", "step": 1})
+        self.assertTrue(all("GHL's plan for this visit" not in call["prompt"] for call in self.calls))
+        self.assertNotIn("ghl_plan", self.responses()["002"])
 
     def test_no_plan_when_ghl_skips_and_none_for_other_kinds(self):
         self.write_plan("consult-1", skip="replay state unreliable")
