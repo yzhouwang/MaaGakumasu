@@ -139,10 +139,11 @@ class CustomizeLoopTest(unittest.TestCase):
         """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数；不在候选中的 id 与真实信箱一样视为没有有效答复。"""
 
         def __init__(self, answers):
-            self.answers, self.requests = list(answers), []
+            self.answers, self.requests, self.steps = list(answers), [], []
 
         def ask(self, kind, image, candidates, **kwargs):
             self.requests.append(([c["id"] for c in candidates], kwargs.get("fallback")))
+            self.steps.append(kwargs["context"]["step"])
             answer = self.answers.pop(0) if self.answers else None
             answer = answer() if callable(answer) else answer
             return next((c for c in candidates if c["id"] == answer), None)
@@ -188,7 +189,7 @@ class CustomizeLoopTest(unittest.TestCase):
         action._drink_detail = lambda ctx, image: game["screen"] == "drink_popup"
         action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
         action._menu_options = lambda ctx, image: []
-        decider = self.Decider(answers)
+        decider = self.decider = self.Decider(answers)
         original = produce_actions.ExternalDecider
         produce_actions.ExternalDecider = SimpleNamespace(load=lambda: decider)
         try:
@@ -307,7 +308,8 @@ class CustomizeLoopTest(unittest.TestCase):
         result, game, clicks, requests = self.run_customize(["finish", "dialog_confirm"], screen="log_panel")
         self.assertTrue(result)
         self.assertEqual(clicks, [(360, 1160), (646, 979), (504, 1160)])
-        self.assertEqual(len(requests), 2)
+        # 关面板的轮次不提问：访问的第一个请求仍是第 0 步（GHL 在第 0 步作计划；2026-10-23 续跑时第一个请求是第 1 步，没有计划）
+        self.assertEqual(self.decider.steps, [0, 1])
 
     def test_a_panel_that_cannot_be_closed_is_handed_back(self):
         result, game, clicks, requests = self.run_customize([], screen="stuck_panel")

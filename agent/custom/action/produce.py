@@ -163,7 +163,7 @@ class ProduceCustomizeExternal(CustomAction):
         if not decider:
             return True
         session_key = f"customize-{time.strftime('%Y%m%d-%H%M%S')}"
-        invalid, exiting, leaving, overlays = 0, False, False, 0
+        invalid, exiting, leaving, overlays, asked = 0, False, False, 0, 0
         for step in range(self.MAX_STEPS + self.LEAVE_STEPS):
             if context.tasker.stopping:
                 return False
@@ -206,10 +206,12 @@ class ProduceCustomizeExternal(CustomAction):
                 candidates, fallback = self._screen_candidates(context, image, exit_box), "finish" if exit_box else "dismiss"
             chosen = None
             if step < self.MAX_STEPS and invalid < 3:
+                # step 数的是本次访问向决策者提出的请求（GHL 在第 0 步为访问作计划），不是循环轮次：关面板等轮次不提问
                 chosen = decider.ask(
                     "customize", image, candidates, fallback=fallback,
-                    context={"session_key": session_key, "step": step}, stopping=lambda: context.tasker.stopping,
+                    context={"session_key": session_key, "step": asked}, stopping=lambda: context.tasker.stopping,
                 )
+                asked += 1
                 if context.tasker.stopping:
                     return False
                 invalid += chosen is None
