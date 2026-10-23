@@ -210,12 +210,10 @@ def limit_rois(slot):
 
 
 def count_in(items, pattern, confidence=0.6):
-    """读数中第一个匹配 pattern（一个数字分组）的次数，从左到右，读不到为 None。"""
-    for item in sorted(items, key=lambda item: item["box"][0]):
-        match = re.search(pattern, item["text"])
-        if match and item["confidence"] >= confidence:
-            return int(match.group(1))
-    return None
+    """读数从左到右拼成一行后第一个匹配 pattern（一个数字分组）的次数，读不到为 None；OCR 常把「合計あと2回」拆成几段。"""
+    text = "".join(item["text"] for item in sorted(items, key=lambda item: item["box"][0]) if item["confidence"] >= confidence)
+    match = re.search(pattern, text)
+    return int(match.group(1)) if match else None
 
 
 def customize_fields(p_items, cost_items, title_items, menu_items, slots, limits=None, footer_items=None):
@@ -247,9 +245,10 @@ def customize_fields(p_items, cost_items, title_items, menu_items, slots, limits
     title = max(title_items, key=lambda item: item["confidence"], default=None)
     fields = dict(fields, screen="preview", title=title, options=options, cost=first_number(cost_items))
     if footer_items is not None:
-        # 「合計」与「あと N回」可能被拆成两段文字：「実行する」上方（画面右半）的「あと N回」即为总次数。
+        # 「一覧に戻る」上方（画面左半）为「あと N枚」，「実行する」上方（右半）为「合計あと N回」；「合計」可能读不到。
+        left = [item for item in footer_items if item["box"][0] + item["box"][2] / 2 < 360]
         right = [item for item in footer_items if item["box"][0] + item["box"][2] / 2 >= 360]
-        fields.update(total_left=count_in(right, r"あと(\d+)回"), cards_left=count_in(footer_items, r"あと(\d+)枚"))
+        fields.update(total_left=count_in(right, r"あと(\d+)回"), cards_left=count_in(left, r"あと(\d+)枚"))
     return fields
 
 

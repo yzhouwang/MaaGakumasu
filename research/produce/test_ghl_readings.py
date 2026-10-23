@@ -147,12 +147,19 @@ class CustomizeFieldsTest(unittest.TestCase):
         limits[0] = ([], [token("カスタマイズ上限", [55, 895, 175, 22], 0.4)])
         self.assertFalse(customize_fields([], [], [], self.MENU, self.WINK, limits, [])["options"][0]["capped"])
 
-    def test_the_total_read_as_two_texts(self):
-        # 「合計」与「あと N回」被拆开：画面右半（「実行する」上方）的「あと N回」才是总次数。
+    def test_counts_read_as_several_texts(self):
+        # OCR 把徽章拆成几段：按从左到右拼接后再读；画面右半（「実行する」上方）的「あと N回」才是总次数。
         footer = [token("あと1枚", [170, 1012, 90, 22]), token("合計", [440, 1012, 40, 22]), token("あと2回", [482, 1012, 70, 22])]
         fields = customize_fields([], [], [], self.MENU, self.WINK, None, footer)
         self.assertEqual((fields["total_left"], fields["cards_left"]), (2, 1))
         self.assertNotIn("left", fields["options"][0])
+        footer = [token("回", [540, 1012, 20, 22]), token("合計", [440, 1012, 40, 22]), token("あと", [482, 1012, 40, 22]), token("2", [524, 1012, 14, 22])]
+        footer += [token("あと", [170, 1012, 40, 22]), token("1枚", [212, 1012, 40, 22])]
+        fields = customize_fields([], [], [], self.MENU, self.WINK, None, footer)
+        self.assertEqual((fields["total_left"], fields["cards_left"]), (2, 1))
+        limits = [([token("あと", [105, 788, 40, 20]), token("2回", [147, 788, 30, 20])], []), ([], []), ([], [])]
+        self.assertEqual(customize_fields([], [], [], self.MENU, self.WINK, limits, [])["options"][0]["left"], 2)
+        # 画面左半的「あと N回」不是总次数。
         self.assertIsNone(customize_fields([], [], [], self.MENU, self.WINK, None, [token("あと2回", [170, 1012, 90, 22])])["total_left"])
 
 
