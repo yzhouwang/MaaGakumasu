@@ -1150,6 +1150,60 @@
 				"radius": 33
 			},
 			"template_sha256": "f6cfe028939befd70df8bcfd30236092a4025163e57116758c86694c8470f674"
+		},
+		{
+			"id": "drink_0002",
+			"drink_id": 2,
+			"name": "烏龍茶",
+			"template": "produce/drinks/drink_0002.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-23-ghl",
+				"frame_sha256": "e1d105684854fdb6faeea239db0fe8ffdc4d4f2d7c5efd8ba4f3664c49da9d8c",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-23",
+				"verification": {
+					"method": "elimination_and_drink_keep_effect_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring, the bottle labelled 烏龍茶) at drink slot 1 of the midterm's first frame (request 20261023-162331-00007). The drinks held were the start-bonus pick センブリソーダ (request 20261023-151056-00001), the week-3 activity pick 烏龍茶 (20261023-151056-00009) and the week-4 lesson's clear grant ルイボスティー; slots 0 and 2 read センブリソーダ and ルイボスティー by their templates, so slot 1 is 烏龍茶 by elimination (the week-4 lesson's first frame, 20261023-151056-00012, already showed it beside センブリソーダ). Cross-checks: the drink-keep dialog after the week-16 lesson (20261023-162331-00087) lists the held drinks with their effects, the first with this icon and 烏龍茶's effect text (元気+7, which no other drink has); the drink-keep answers after weeks 14 and 16 name 烏龍茶 among the held drinks; the same icon is at slot 0 of the week-12, 14 and 16 lessons' first frames (00033, 00050, 00070) and gone from the final's after 00087 unchecked it.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "d0000e91a6fdde26b124fbc3cbd30ec0afb2ba48ef0f8a8cd4dac8119c260480"
+		},
+		{
+			"id": "drink_0013",
+			"drink_id": 13,
+			"name": "パワフル漢方ドリンク",
+			"template": "produce/drinks/drink_0013.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-23-ghl",
+				"frame_sha256": "26cb123cfb2c1df87b3dff75aae79e8e038452e6a437031bcf1af029a0ff435f",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-23",
+				"verification": {
+					"method": "drink_keep_effect_and_elimination_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring, a blue bottle) at drink slot 2 of the final exam's first frame (request 20261023-162331-00121). The drink came with the week-16 lesson's clear: the drink-keep dialog after that lesson (00087) shows it as the received drink with パワフル漢方ドリンク's effect text (山札か捨札にあるアイドル固有スキルカード1枚を手札に移動, 消費体力減少3ターン), and the answers (00087-00091) unchecked 烏龍茶 to keep it with both ルイボスティー. Slots 0 and 1 of the final read ルイボスティー by its template, so slot 2 is the kept drink; the end screens show it unused.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "9f23652f01459a118c708bd0737d016281fe8afe56be233929f84c6bff0b2aa1"
 		}
 	]
 }
