@@ -21,6 +21,10 @@ GHL 的等待从请求提出时算起，模型调用不超过 Agent 剩余的等
 行动数与使用的饮料，有新的行动时以新的编号移到末尾），问模型时附上该会话尚未见过的部分。每个会话键记下它见过的编号，
 作答有效后更新；另开新会话（首次调用、满 --session-turns 次或上次调用失败后）时没有对话记录，附上最近的全部决策。
 决策者重启后所有会话都是新会话，决策记录从 decisions.jsonl 恢复。
+
+相谈（商店）与特别指导是逐步点击的交互画面，GHL 不逐步作答：实况桥在每次访问的第一步按其规则写下计划
+（ghl/plans.jsonl，按 session_key），本决策者把计划附在这次访问各步的提示中，模型只负责执行（第一步等计划至多
+--ghl-wait 秒）。GHL 不作计划（状态不可靠等）时照常由模型决定。
 """
 
 import os
@@ -87,6 +91,23 @@ def read_ghl_answers(path: Path) -> dict:
             continue
         answers[answer.get("id")] = answer
     return answers
+
+
+def read_ghl_plans(path: Path) -> dict:
+    """GHL 实况桥为相谈、特别指导各次访问写下的计划（按 session_key，后写的一行取代前面的）；只读以换行结尾的行。"""
+    try:
+        text = path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    plans = {}
+    for line in text.split("\n")[:-1]:
+        try:
+            plan = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(plan, dict) and plan.get("session_key"):
+            plans[plan["session_key"]] = plan
+    return plans
 
 
 def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider", lesson_drinks: bool = False):
@@ -267,8 +288,8 @@ class Decider:
         print(f"[{path.stem}] {request.get('kind', '?')} 跳过：{why}", flush=True)
         return True
 
-    def prompt_for(self, request: dict, reading: dict, mark: int | None = None) -> str:
-        """提示正文；mark 为该会话已见到的决策编号（见 handoff_text）。"""
+    def prompt_for(self, request: dict, reading: dict, mark: int | None = None, plan: dict | None = None) -> str:
+        """提示正文；mark 为该会话已见到的决策编号（见 handoff_text），plan 为 GHL 对本次相谈或特别指导的计划。"""
         lines = [f"Decision kind: {request['kind']}", f"Screenshot: {request['frame']}"]
         for name, frame in (request.get("extra_frames") or {}).items():
             lines.append(f"Detail screenshot {name}: {frame}")
@@ -296,6 +317,14 @@ class Decider:
         handoff = self.handoff_text(mark)
         if handoff:
             lines.append(handoff)
+        if plan:
+            lines.append(
+                "GHL's plan for this visit (GHL holds the exact deck, drinks and P and decides this visit; you carry it out):\n"
+                + str(plan.get("text", "")).strip()
+                + "\nCarry out the plan's steps in order. Do not buy, upgrade, delete or customize anything the plan does not name."
+                " If a step cannot be done on screen (the card or item is not there, P is short), skip it and say so in your reason."
+                " When the plan is done, leave the screen."
+            )
         return "\n".join(lines)
 
     def note_handoff(self, request: dict, response: dict):
@@ -420,6 +449,22 @@ class Decider:
         }
         return answer
 
+    def ghl_plan(self, request: dict, until: float):
+        """
+        GHL 对本次相谈或特别指导的计划（按请求的 session_key）；没有或 GHL 不作计划（skip）时为 None。
+
+        计划在访问的第一步（step 0）由实况桥写下：第一步等到 until（请求提出后 --ghl-wait 秒，不晚于 Agent 放弃），之后各步只读一次。
+        """
+        context = request.get("context") or {}
+        key = context.get("session_key")
+        if request["kind"] not in ("consult", "customize") or not key:
+            return None
+        while True:
+            plan = read_ghl_plans(self.mailbox / "ghl" / "plans.jsonl").get(key)
+            if plan or context.get("step") != 0 or time.time() >= until:
+                return None if not plan or plan.get("skip") else plan
+            time.sleep(0.2)
+
     def ghl_answer(self, request: dict, until: float):
         """等 GHL 实况桥对该请求的选择，至多等到 until（请求提出后 --ghl-wait 秒，且不晚于 Agent 放弃），返回 (答复, 未采用的原因)。"""
         if request["kind"] not in ("battle", "week", "reward", "class_option"):
@@ -456,6 +501,7 @@ class Decider:
                 response = {"id": request["id"], "choice": request.get("fallback"), "reason": f"GHL only; {why}", "source": "fallback"}
                 self.finish(path, request, {}, "", response)
                 return
+        plan = self.ghl_plan(request, min(created + self.args.ghl_wait, deadline)) if self.args.ghl else None
         if request["kind"] == "battle" and not self.args.no_vision:
             try:
                 if self.reader is None:
@@ -466,7 +512,7 @@ class Decider:
         context = request.get("context") or {}
         key = context.get("session_key") or (context.get("battle_id") if request["kind"] == "battle" else None) or "campaign"
         # 续接的会话只附上它尚未见过的决策；另开的新会话没有对话记录，附上最近的全部决策
-        prompt = self.prompt_for(request, reading, self.handoff_seen.get(key) if self.resumes(key) else None)
+        prompt = self.prompt_for(request, reading, self.handoff_seen.get(key) if self.resumes(key) else None, plan)
         seen = self.handoff_seq
         response = {"id": request["id"], "choice": request.get("fallback"), "reason": "", "source": "fallback"}
         left = deadline - time.time()
@@ -494,6 +540,8 @@ class Decider:
                 response["reason"] = f"decider error: {exc}"
         if ghl_note:
             response["ghl"] = ghl_note
+        if plan:
+            response["ghl_plan"] = plan["session_key"]
         self.finish(path, request, reading, prompt, response)
 
     def finish(self, path: Path, request: dict, reading: dict, prompt: str, response: dict):

@@ -25,7 +25,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 import custom.action.produce as produce_actions
-from opus_decider import HANDOFF_KEEP, HANDOFF_LINES, HANDOFF_LINE_CHARS, Decider, ghl_choice, parse_args, read_ghl_answers
+from opus_decider import HANDOFF_KEEP, HANDOFF_LINES, HANDOFF_LINE_CHARS, Decider, ghl_choice, parse_args, read_ghl_plans, read_ghl_answers
 from produce.decider import ExternalDecider, _next_session, run_interactive
 
 IMAGE = np.zeros((1280, 720, 3), dtype=np.uint8)
@@ -561,6 +561,50 @@ class HandoffTest(unittest.TestCase):
         self.assertTrue(all(len(line) == len("- ") + HANDOFF_LINE_CHARS for line in lines[1:]))
         # 见过前面各条的会话只列其后的决策。
         self.assertEqual(len(summary_lines(decider.handoff_text(HANDOFF_KEEP + 2))), 3)
+
+
+class GhlPlanTest(HandoffTest):
+    """相谈、特别指导的访问附上 GHL 的计划：按 session_key 取 ghl/plans.jsonl，第一步等计划写下，不作计划（skip）时照常。"""
+
+    plan_text = "Upgrade 先へ進む姿 (100 P). Delete ファンサの基本 (100 P). Then leave."
+
+    def write_plan(self, key, **extra):
+        with open(self.mailbox / "ghl" / "plans.jsonl", "a", encoding="utf-8") as file:
+            file.write(json.dumps({"session_key": key, "kind": "consult", "text": self.plan_text, **extra}, ensure_ascii=False) + "\n")
+
+    def responses(self):
+        return {path.stem: json.loads(path.read_text(encoding="utf-8")) for path in (self.mailbox / "responses").glob("*.json")}
+
+    def test_plan_reaches_every_step_of_its_visit(self):
+        self.write_plan("consult-1")
+        decider = self.decider()
+        for request_id, step in (("001", 0), ("002", 1)):
+            self.ask(decider, request_id, "consult", self.consult, "done", context={"session_key": "consult-1", "step": step})
+        self.assertTrue(all("GHL's plan for this visit" in call["prompt"] and self.plan_text in call["prompt"] for call in self.calls))
+        self.assertEqual({key: value.get("ghl_plan") for key, value in self.responses().items()}, {"001": "consult-1", "002": "consult-1"})
+        # Another visit has no plan.
+        self.ask(decider, "003", "consult", self.consult, "done", context={"session_key": "consult-2", "step": 3})
+        self.assertNotIn("GHL's plan for this visit", self.calls[-1]["prompt"])
+
+    def test_first_step_waits_for_the_plan(self):
+        decider = self.decider("--ghl-wait", "5")
+        writer = threading.Timer(0.4, self.write_plan, args=("customize-1",))
+        writer.start()
+        self.addCleanup(writer.cancel)
+        self.ask(decider, "001", "customize", self.consult, "done", context={"session_key": "customize-1", "step": 0})
+        self.assertIn(self.plan_text, self.calls[-1]["prompt"])
+
+    def test_no_plan_when_ghl_skips_and_none_for_other_kinds(self):
+        self.write_plan("consult-1", skip="replay state unreliable")
+        decider = self.decider()
+        self.ask(decider, "001", "consult", self.consult, "done", context={"session_key": "consult-1", "step": 0})
+        self.ask(decider, "002", "week", self.week, "rest", context={"session_key": "consult-1"})
+        self.assertTrue(all("GHL's plan for this visit" not in call["prompt"] for call in self.calls))
+
+    def test_plans_file_last_complete_row_wins(self):
+        path = self.mailbox / "ghl" / "plans.jsonl"
+        path.write_text(json.dumps({"session_key": "a", "text": "old"}) + "\n" + json.dumps({"session_key": "a", "text": "new"}) + "\n" + '{"session_key": "b", "te', encoding="utf-8")
+        self.assertEqual({key: plan["text"] for key, plan in read_ghl_plans(path).items()}, {"a": "new"})
 
 
 if __name__ == "__main__":
