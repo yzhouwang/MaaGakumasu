@@ -130,6 +130,11 @@ class CustomizeLoopTest(unittest.TestCase):
     DISMISS = produce_actions.ProduceCustomizeExternal.DISMISS
     PANEL_CLOSE = [320, 1120, 80, 80]
 
+    def setUp(self):
+        # 关不掉的面板跨次进入累计，测试之间清零
+        produce_actions.ProduceCustomizeExternal._overlay_rounds = 0
+        self.addCleanup(setattr, produce_actions.ProduceCustomizeExternal, "_overlay_rounds", 0)
+
     class Decider:
         """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数；不在候选中的 id 与真实信箱一样视为没有有效答复。"""
 
@@ -171,6 +176,7 @@ class CustomizeLoopTest(unittest.TestCase):
         # 标题：弹窗与面板盖住时为 overlay（_dialog 先认出弹窗，弹窗时不看标题）
         action.guide_state = lambda ctx, image: {"left": "left", "log_panel": "overlay", "stuck_panel": "overlay"}.get(game["screen"], "screen")
         action._overlay_close = lambda ctx, image: list(self.PANEL_CLOSE) if game["screen"] == "log_panel" else None
+        action._drink_detail = lambda ctx, image: game["screen"] == "drink_popup"
         action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
         action._menu_options = lambda ctx, image: []
         decider = self.Decider(answers)
@@ -198,7 +204,8 @@ class CustomizeLoopTest(unittest.TestCase):
         result, game, clicks, requests = self.run_customize(["dialog_cancel", "finish", "dialog_confirm"], screen="drink_popup")
         self.assertTrue(result)
         self.assertEqual(clicks, [(215, 1160), (646, 979), (504, 1160)])
-        self.assertEqual(requests[0][1], "dialog_cancel")
+        # P 饮料详情只能关闭：右侧是「使う」，不提供
+        self.assertEqual(requests[0], (["dialog_cancel", "wait"], "dialog_cancel"))
 
     def test_no_answer_closes_a_popup_then_leaves(self):
         # 没按过「終了」时弹窗按 fallback 关闭；按过之后确认
@@ -254,6 +261,27 @@ class CustomizeLoopTest(unittest.TestCase):
         self.assertEqual(game["screen"], "left")
         self.assertEqual(len(requests), 3)
         self.assertEqual(clicks, [(360, 985), (646, 979), (504, 1160)])
+
+    def test_confirm_is_never_pressed_on_a_drink_detail(self):
+        # 按过「終了」后答复期间弹窗变成 P 饮料详情（同样位置的「キャンセル」）：不按右侧的「使う」，之后只提供关闭
+        def becomes_drink_detail():
+            self.game["screen"] = "drink_popup"
+            return "dialog_confirm"
+
+        result, game, clicks, requests = self.run_customize(["finish", becomes_drink_detail, None, None, None])
+        self.assertTrue(result)
+        self.assertEqual(clicks, [(646, 979), (215, 1160), (646, 979), (504, 1160)])
+        self.assertEqual(requests[2], (["dialog_cancel", "wait"], "dialog_cancel"))
+
+    def test_an_unclosable_panel_stops_the_task_after_three_rounds(self):
+        # 每轮交还主循环后主循环会立刻再进来：第三轮仍关不掉就让任务失败，等人处理
+        results = [self.run_customize([], screen="stuck_panel")[0] for _ in range(3)]
+        self.assertEqual(results, [True, True, False])
+
+    def test_the_panel_rounds_reset_on_a_clear_screen(self):
+        self.run_customize([], screen="stuck_panel")
+        self.run_customize(["finish", "dialog_confirm"])
+        self.assertEqual(produce_actions.ProduceCustomizeExternal._overlay_rounds, 0)
 
     def test_a_panel_over_the_screen_is_closed_without_asking(self):
         # 主循环的通用按钮节点在弹窗淡出时误开的履历面板：点它底部正中的「×」，不问决策者

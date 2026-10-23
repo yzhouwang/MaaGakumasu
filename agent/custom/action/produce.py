@@ -127,7 +127,9 @@ class ProduceCustomizeExternal(CustomAction):
     左侧为「キャンセル」的弹窗（P 点有剩余时「終了」的确认框、误开的 P 饮料详情等）打开时只提供弹窗左右两个按钮与等待：
     弹窗按钮与最底部菜单栏同高，网格点选够不到；主循环的通用按钮节点按得分会点「キャンセル」，弹窗淡出时还会再点一次、
     落到底部菜单栏（2026-10-23 两次实机），因此弹窗都由本动作处理。被面板（例如误开的履历）盖住时不问决策者，点面板底部正中的「×」。
-    没有有效答复时按 fallback 处理：弹窗在按过「終了」之后确认、之前关闭；「終了」可见则结束，被提示遮住则点掉提示。
+    弹窗的右侧按钮只在本动作按过「終了」之后、且弹窗不是 P 饮料详情（右侧为「使う」）时提供，其余弹窗只能关闭。
+    没有有效答复时按 fallback 处理：能确认的弹窗确认、其余关闭；「終了」可见则结束，被提示遮住则点掉提示。
+    面板关不掉时交还主循环；主循环会立刻再进来，累计三轮仍关不掉就让任务失败，等人处理。
     决策步数用完或三次没有有效答复（超时、无效选项或网格外坐标）后不再询问，按同样的 fallback 离开特别指导，
     不把未处理的弹窗或提示交还主循环。
     """
@@ -147,7 +149,11 @@ class ProduceCustomizeExternal(CustomAction):
     OVERLAY_CLOSE = {
         "recognition": "TemplateMatch", "roi": [280, 1080, 160, 160], "template": "produce/round_close_button.png", "threshold": 0.7
     }
-    OVERLAY_TRIES = 5
+    # 关不掉的面板：每次进入试 OVERLAY_TRIES 次后交还主循环，主循环会立刻再进来；累计 OVERLAY_ROUNDS 次后让任务失败，等人处理
+    OVERLAY_TRIES, OVERLAY_ROUNDS = 5, 3
+    _overlay_rounds = 0
+    # P 饮料详情的标题「Pドリンク詳細」：右侧按钮是「使う」，这种弹窗只能关闭
+    DRINK_DETAIL = {"recognition": "OCR", "roi": [20, 760, 680, 200], "expected": ["ドリンク"]}
     MAX_STEPS, LEAVE_STEPS = 40, 15
     STEP_DELAY = 1.5
     SETTLE_S, SETTLE_POLL = 6.0, 0.5
@@ -167,8 +173,10 @@ class ProduceCustomizeExternal(CustomAction):
             state = None if dialog else self.guide_state(context, image)
             if state == "left":
                 return True
+            if state == "screen":
+                ProduceCustomizeExternal._overlay_rounds = 0
             if state == "overlay":
-                # 盖住特别指导的面板不问决策者，点它底部正中的「×」；关不掉时交还主循环
+                # 盖住特别指导的面板不问决策者，点它底部正中的「×」；关不掉时交还主循环，累计多次后让任务失败
                 overlays += 1
                 close = self._overlay_close(context, image)
                 if close:
@@ -179,11 +187,17 @@ class ProduceCustomizeExternal(CustomAction):
                     logger.warning("自定义：特别指导被盖住，找不到关闭按钮")
                     time.sleep(self.STEP_DELAY)
                 if overlays >= self.OVERLAY_TRIES:
+                    ProduceCustomizeExternal._overlay_rounds += 1
+                    if ProduceCustomizeExternal._overlay_rounds >= self.OVERLAY_ROUNDS:
+                        logger.error("自定义：特别指导被盖住且关不掉，停止任务，请手动处理")
+                        return False
                     return True
                 continue
             exit_box = None if dialog else self._exit_button(context, image)
             if dialog:
-                candidates, fallback = self._dialog_candidates(dialog), "dialog_confirm" if exiting else "dialog_cancel"
+                # 只有本动作按过「終了」之后出现、且不是 P 饮料详情的弹窗才能确认（P 饮料详情右侧是「使う」）
+                confirmable = exiting and not self._drink_detail(context, image)
+                candidates, fallback = self._dialog_candidates(dialog, confirmable), "dialog_confirm" if confirmable else "dialog_cancel"
             else:
                 candidates, fallback = self._screen_candidates(context, image, exit_box), "finish" if exit_box else "dismiss"
             chosen = None
@@ -207,9 +221,11 @@ class ProduceCustomizeExternal(CustomAction):
                 self._settle(context, lambda frame: self._dialog(context, frame) or self.guide_state(context, frame) == "left")
                 continue
             if action in ("dialog_cancel", "dialog_confirm"):
-                # 答复期间弹窗可能已在关闭：只在它仍在原处时点击，以免点到弹窗下方的饮料栏
-                now = self._dialog(context, context.tasker.controller.post_screencap().wait().get())
-                if not now or max(abs(a - b) for a, b in zip(now, dialog)) > 4:
+                # 答复期间弹窗可能已在关闭：只在它仍在原处时点击，以免点到弹窗下方的饮料栏；确认前再看一次不是 P 饮料详情
+                fresh = context.tasker.controller.post_screencap().wait().get()
+                now = self._dialog(context, fresh)
+                moved = not now or max(abs(a - b) for a, b in zip(now, dialog)) > 4
+                if moved or (action == "dialog_confirm" and self._drink_detail(context, fresh)):
                     logger.warning(f"自定义：弹窗已变化（{dialog} → {now}），不点击")
                     time.sleep(self.SETTLE_POLL)
                     continue
@@ -261,14 +277,20 @@ class ProduceCustomizeExternal(CustomAction):
         return candidates + [{"id": "dismiss", "label": "点掉画面下方遮住「終了」的提示（「…をカスタマイズしました」）", "box": self.DISMISS}]
 
     @staticmethod
-    def _dialog_candidates(cancel):
-        """弹窗打开时只有左右两个按钮与等待。"""
+    def _dialog_candidates(cancel, confirmable):
+        """弹窗打开时只有「キャンセル」与等待；按过「終了」后的确认框另有右侧按钮。"""
         x, y, w, h = cancel
-        return [
-            {"id": "dialog_cancel", "label": "弹窗左侧的「キャンセル」（关闭弹窗，例如误开的 P 饮料详情）", "box": list(cancel)},
-            {"id": "dialog_confirm", "label": "弹窗右侧的按钮（确认结束特别指导等；P 饮料详情的「使う」不要选）", "box": [720 - x - w, y, w, h]},
-            {"id": "wait", "label": "等待画面变化", "box": [0, 0, 0, 0]},
-        ]
+        candidates = [{"id": "dialog_cancel", "label": "弹窗左侧的「キャンセル」（关闭弹窗，例如误开的 P 饮料详情）", "box": list(cancel)}]
+        if confirmable:
+            candidates.append({"id": "dialog_confirm", "label": "弹窗右侧的按钮（确认结束特别指导）", "box": [720 - x - w, y, w, h]})
+        return candidates + [{"id": "wait", "label": "等待画面变化", "box": [0, 0, 0, 0]}]
+
+    def _drink_detail(self, context, image):
+        """弹窗是 P 饮料详情（标题「Pドリンク詳細」）。"""
+        detail = context.run_recognition(
+            "ProduceCustomizeDrinkDetail", image, pipeline_override={"ProduceCustomizeDrinkDetail": self.DRINK_DETAIL}
+        )
+        return bool(detail and detail.hit)
 
     def _dialog(self, context, image):
         """左侧为「キャンセル」的弹窗打开时返回该按钮的框，否则返回 None。"""
