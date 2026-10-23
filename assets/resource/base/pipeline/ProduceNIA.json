@@ -293,24 +293,13 @@
       }
     },
     "next": [
-      "ProduceGuideLeft",
-      "ProduceGuideExit"
+      "ProduceGuideDone"
     ]
   },
-  "ProduceGuideLeft": {
+  "ProduceGuideDone": {
     "recognition": {
-      "type": "TemplateMatch",
-      "param": {
-        "roi": [
-          0,
-          0,
-          260,
-          170
-        ],
-        "template": "produce/guide_header.png",
-        "threshold": 0.85,
-        "inverse": true
-      }
+      "type": "DirectHit",
+      "param": {}
     },
     "action": {
       "type": "DoNothing",

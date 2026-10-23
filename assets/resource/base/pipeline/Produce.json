@@ -877,6 +877,7 @@
             "[JumpBack]ProduceRecognitionWorkOptions",
             "[JumpBack]ProduceSkipChatFlag",
             "[JumpBack]ProduceGuideScreen",
+            "[JumpBack]ProduceCustomizeExternal",
             "[JumpBack]ProduceButton",
             "[JumpBack]ProduceSkip",
             "[JumpBack]Click_1"

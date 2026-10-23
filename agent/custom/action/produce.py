@@ -103,12 +103,17 @@ class ProduceDeckEditExternal(CustomAction):
 
 @AgentServer.custom_recognition("ProduceCustomizeExternalReady")
 class ProduceCustomizeExternalReady(CustomRecognition):
-    """外部决策启用（customize）时命中特别指导的卡牌自定义画面，否则交给原有的「终了」节点。"""
+    """
+    外部决策启用（customize）时命中特别指导画面，包括被弹窗或面板盖住时（主循环在通用按钮节点之前经此进入，
+    弹窗与面板都由 ProduceCustomizeExternal 处理）；否则交给原有的「终了」节点。
+    """
 
     def analyze(self, context, argv):
         decider = ExternalDecider.load()
         if not decider or not decider.handles("customize"):
             return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "外部决策未启用"})
+        if ProduceCustomizeExternal.guide_state(context, argv.image) == "left":
+            return CustomRecognition.AnalyzeResult(box=None, detail={"detail": "非特别指导画面"})
         return CustomRecognition.AnalyzeResult(box=[0, 0, 1, 1], detail={"detail": "特别指导自定义"})
 
 
@@ -120,7 +125,8 @@ class ProduceCustomizeExternal(CustomAction):
     可选操作只有：在卡牌网格内点选（选中卡牌，不消耗 P 点）、滚动网格、点选自定义选项、カスタマイズ、
     実行する（消耗 P 点）、一覧に戻る、等待与结束（由本动作点击「終了」）；「…をカスタマイズしました」提示遮住「終了」时改为点掉提示。
     左侧为「キャンセル」的弹窗（P 点有剩余时「終了」的确认框、误开的 P 饮料详情等）打开时只提供弹窗左右两个按钮与等待：
-    弹窗按钮与最底部菜单栏同高，网格点选够不到；主循环的通用按钮节点按得分会点「キャンセル」，因此弹窗都由本动作处理。
+    弹窗按钮与最底部菜单栏同高，网格点选够不到；主循环的通用按钮节点按得分会点「キャンセル」，弹窗淡出时还会再点一次、
+    落到底部菜单栏（2026-10-23 两次实机），因此弹窗都由本动作处理。被面板（例如误开的履历）盖住时不问决策者，点面板底部正中的「×」。
     没有有效答复时按 fallback 处理：弹窗在按过「終了」之后确认、之前关闭；「終了」可见则结束，被提示遮住则点掉提示。
     决策步数用完或三次没有有效答复（超时、无效选项或网格外坐标）后不再询问，按同样的 fallback 离开特别指导，
     不把未处理的弹窗或提示交还主循环。
@@ -133,8 +139,15 @@ class ProduceCustomizeExternal(CustomAction):
     DISMISS = [330, 970, 60, 30]
     # 弹窗左下的「キャンセル」；弹窗居中，右侧按钮与之左右对称
     DIALOG_CANCEL = {"recognition": "TemplateMatch", "roi": [40, 1000, 400, 270], "template": "cancel.png", "threshold": 0.9}
-    # 左上角的特别指导标题，与 ProduceGuideScreen 相同（另设节点：那个节点识别成功时会在控制台提示「事件: 特别指导」）
-    GUIDE_HEADER = {"recognition": "TemplateMatch", "roi": [0, 0, 260, 170], "template": "produce/guide_header.png", "threshold": 0.85}
+    # 左上角的特别指导标题（模板与 ProduceGuideScreen 相同）：特别指导画面本身得分 ≥ 0.85；被弹窗模糊或被面板盖住时约 0.57–0.68；
+    # 其余画面（含相谈）不超过约 0.43（两次实机的全部请求截图），以 0.5 为界判断是否仍在特别指导
+    GUIDE_HEADER = {"recognition": "TemplateMatch", "roi": [0, 0, 260, 170], "template": "produce/guide_header.png", "threshold": 0.5}
+    GUIDE_CLEAR = 0.85
+    # 盖住特别指导的面板（例如底部菜单栏误开的履历）底部正中的圆形「×」
+    OVERLAY_CLOSE = {
+        "recognition": "TemplateMatch", "roi": [280, 1080, 160, 160], "template": "produce/round_close_button.png", "threshold": 0.7
+    }
+    OVERLAY_TRIES = 5
     MAX_STEPS, LEAVE_STEPS = 40, 15
     STEP_DELAY = 1.5
     SETTLE_S, SETTLE_POLL = 6.0, 0.5
@@ -144,15 +157,30 @@ class ProduceCustomizeExternal(CustomAction):
         if not decider:
             return True
         session_key = f"customize-{time.strftime('%Y%m%d-%H%M%S')}"
-        invalid, exiting, leaving = 0, False, False
+        invalid, exiting, leaving, overlays = 0, False, False, 0
         for step in range(self.MAX_STEPS + self.LEAVE_STEPS):
             if context.tasker.stopping:
                 return False
             image = context.tasker.controller.post_screencap().wait().get()
-            # 弹窗会模糊左上角的特别指导标题，先认弹窗再判断是否已离开
+            # 弹窗会模糊左上角的特别指导标题，先认弹窗再看标题
             dialog = self._dialog(context, image)
-            if not dialog and not self._in_guide(context, image):
+            state = None if dialog else self.guide_state(context, image)
+            if state == "left":
                 return True
+            if state == "overlay":
+                # 盖住特别指导的面板不问决策者，点它底部正中的「×」；关不掉时交还主循环
+                overlays += 1
+                close = self._overlay_close(context, image)
+                if close:
+                    logger.warning(f"自定义：关闭盖住特别指导的面板 {close}")
+                    self._click(context, close)
+                    self._settle(context, lambda frame: self._dialog(context, frame) or self.guide_state(context, frame) != "overlay")
+                else:
+                    logger.warning("自定义：特别指导被盖住，找不到关闭按钮")
+                    time.sleep(self.STEP_DELAY)
+                if overlays >= self.OVERLAY_TRIES:
+                    return True
+                continue
             exit_box = None if dialog else self._exit_button(context, image)
             if dialog:
                 candidates, fallback = self._dialog_candidates(dialog), "dialog_confirm" if exiting else "dialog_cancel"
@@ -176,7 +204,7 @@ class ProduceCustomizeExternal(CustomAction):
                 self._click(context, exit_box)
                 exiting = True
                 # P 点有剩余时弹出确认框，否则画面直接离开特别指导
-                self._settle(context, lambda frame: self._dialog(context, frame) or not self._in_guide(context, frame))
+                self._settle(context, lambda frame: self._dialog(context, frame) or self.guide_state(context, frame) == "left")
                 continue
             if action in ("dialog_cancel", "dialog_confirm"):
                 # 答复期间弹窗可能已在关闭：只在它仍在原处时点击，以免点到弹窗下方的饮料栏
@@ -187,7 +215,7 @@ class ProduceCustomizeExternal(CustomAction):
                     continue
                 self._click(context, chosen["box"])
                 if action == "dialog_confirm":
-                    self._settle(context, lambda frame: not self._dialog(context, frame) and not self._in_guide(context, frame))
+                    self._settle(context, lambda frame: not self._dialog(context, frame) and self.guide_state(context, frame) == "left")
                 else:
                     exiting = False
                     self._settle(context, lambda frame: not self._dialog(context, frame))
@@ -247,12 +275,21 @@ class ProduceCustomizeExternal(CustomAction):
         detail = context.run_recognition("ProduceCustomizeDialog", image, pipeline_override={"ProduceCustomizeDialog": self.DIALOG_CANCEL})
         return list(detail.box) if detail and detail.hit else None
 
-    def _in_guide(self, context, image):
-        """左上角仍是特别指导的标题。"""
+    @classmethod
+    def guide_state(cls, context, image):
+        """"screen"：特别指导画面；"overlay"：仍在特别指导，但被弹窗或面板盖住；"left"：已离开特别指导。"""
         detail = context.run_recognition(
-            "ProduceCustomizeGuideHeader", image, pipeline_override={"ProduceCustomizeGuideHeader": self.GUIDE_HEADER}
+            "ProduceCustomizeGuideHeader", image, pipeline_override={"ProduceCustomizeGuideHeader": cls.GUIDE_HEADER}
         )
-        return bool(detail and detail.hit)
+        score = max((r.score for r in (detail.all_results if detail else [])), default=0.0)
+        return "screen" if score >= cls.GUIDE_CLEAR else "overlay" if score >= cls.GUIDE_HEADER["threshold"] else "left"
+
+    def _overlay_close(self, context, image):
+        """盖住特别指导的面板底部正中的「×」，没有时返回 None。"""
+        detail = context.run_recognition(
+            "ProduceCustomizeOverlayClose", image, pipeline_override={"ProduceCustomizeOverlayClose": self.OVERLAY_CLOSE}
+        )
+        return list(detail.box) if detail and detail.hit else None
 
     @staticmethod
     def _exit_button(context, image):

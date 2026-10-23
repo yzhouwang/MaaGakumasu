@@ -128,6 +128,7 @@ class CustomizeLoopTest(unittest.TestCase):
     CONFIRM = [401, 1127, 207, 66]
     EXIT = [586, 957, 120, 44]
     DISMISS = produce_actions.ProduceCustomizeExternal.DISMISS
+    PANEL_CLOSE = [320, 1120, 80, 80]
 
     class Decider:
         """按顺序作答：候选 id、None（没有有效答复）或先改变画面再作答的函数；不在候选中的 id 与真实信箱一样视为没有有效答复。"""
@@ -152,6 +153,8 @@ class CustomizeLoopTest(unittest.TestCase):
                 game["screen"] = "exit_dialog" if confirm_on_exit else "left"
             elif game["screen"] == "message" and inside(self.DISMISS, x, y):
                 game["screen"] = "menu"
+            elif game["screen"] == "log_panel" and inside(self.PANEL_CLOSE, x, y):
+                game["screen"] = "menu"
             elif game["screen"] in ("exit_dialog", "drink_popup") and inside(self.CANCEL, x, y):
                 game["screen"] = "menu"
             elif game["screen"] == "exit_dialog" and inside(self.CONFIRM, x, y):
@@ -165,7 +168,9 @@ class CustomizeLoopTest(unittest.TestCase):
         for name, value in attrs.items():
             setattr(action, name, value)
         action._dialog = lambda ctx, image: list(dialogs[game["screen"]]) if game["screen"] in dialogs else None
-        action._in_guide = lambda ctx, image: game["screen"] != "left"
+        # 标题：弹窗与面板盖住时为 overlay（_dialog 先认出弹窗，弹窗时不看标题）
+        action.guide_state = lambda ctx, image: {"left": "left", "log_panel": "overlay", "stuck_panel": "overlay"}.get(game["screen"], "screen")
+        action._overlay_close = lambda ctx, image: list(self.PANEL_CLOSE) if game["screen"] == "log_panel" else None
         action._exit_button = lambda ctx, image: list(self.EXIT) if exit_visible and game["screen"] == "menu" else None
         action._menu_options = lambda ctx, image: []
         decider = self.Decider(answers)
@@ -249,6 +254,33 @@ class CustomizeLoopTest(unittest.TestCase):
         self.assertEqual(game["screen"], "left")
         self.assertEqual(len(requests), 3)
         self.assertEqual(clicks, [(360, 985), (646, 979), (504, 1160)])
+
+    def test_a_panel_over_the_screen_is_closed_without_asking(self):
+        # 主循环的通用按钮节点在弹窗淡出时误开的履历面板：点它底部正中的「×」，不问决策者
+        result, game, clicks, requests = self.run_customize(["finish", "dialog_confirm"], screen="log_panel")
+        self.assertTrue(result)
+        self.assertEqual(clicks, [(360, 1160), (646, 979), (504, 1160)])
+        self.assertEqual(len(requests), 2)
+
+    def test_a_panel_that_cannot_be_closed_is_handed_back(self):
+        result, game, clicks, requests = self.run_customize([], screen="stuck_panel")
+        self.assertTrue(result)
+        self.assertEqual((clicks, requests, game["screen"]), ([], [], "stuck_panel"))
+
+    def test_ready_only_inside_guidance(self):
+        # 主循环在通用按钮节点之前经此进入：特别指导画面（含被盖住时）命中，离开后不命中，未启用外部决策时不命中
+        ready = produce_actions.ProduceCustomizeExternalReady()
+        argv = SimpleNamespace(image=IMAGE)
+        original = produce_actions.ExternalDecider
+        try:
+            for decider, state, hit in ((SimpleNamespace(handles=lambda kind: True), "overlay", True),
+                                        (SimpleNamespace(handles=lambda kind: True), "left", False),
+                                        (None, "screen", False)):
+                produce_actions.ExternalDecider = SimpleNamespace(load=lambda: decider)
+                with mock.patch.object(produce_actions.ProduceCustomizeExternal, "guide_state", lambda ctx, image: state):
+                    self.assertEqual(ready.analyze(None, argv).box is not None, hit, (state, decider))
+        finally:
+            produce_actions.ExternalDecider = original
 
     def test_exit_never_visible_hands_back_after_the_leave_budget(self):
         result, game, clicks, requests = self.run_customize([], exit_visible=False, MAX_STEPS=2, LEAVE_STEPS=2)
