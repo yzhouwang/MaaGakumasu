@@ -1,4 +1,4 @@
-"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览、
+"""牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览（含改造上限）、
 相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除），以及实况读取的断行恢复与失败重试。
 
 使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。临时文件写入 debug/research/produce/tests/。
@@ -21,8 +21,13 @@ from ghl_readings import (
     EXCHANGE_P_ROI,
     SELECTION_BANDS,
     SCREEN_LABEL_ROI,
+    CUSTOMIZE_MENU_ROI,
+    CUSTOMIZE_TITLE_ROI,
     EXCHANGE_DIALOG_ROI,
+    CUSTOMIZE_FOOTER_ROI,
+    limit_rois,
     offer_name,
+    option_rois,
     week_fields,
     completed_ids,
     reward_fields,
@@ -31,6 +36,7 @@ from ghl_readings import (
     read_with_retry,
     selected_option,
     customize_fields,
+    customize_reading,
 )
 
 
@@ -115,6 +121,39 @@ class CustomizeFieldsTest(unittest.TestCase):
         # 卡牌列表画面的菜单在上方，预览位置没有「カスタマイズメニュー」。
         fields = customize_fields([token("410", [372, 98, 50, 30])], [], [token("紅葉ランニング+", [196, 180, 200, 34])], [token("十", [300, 760, 20, 20], 0.61)], [([], [])] * 3)
         self.assertEqual(fields, {"p": 410})
+
+    MENU = [token("カスタマイズメニュー", [255, 762, 200, 22])]
+    WINK = [
+        ([token("好印象+", [90, 820, 100, 30])], [token("40", [140, 872, 30, 24])]),
+        ([token("好印象分パラメータ+", [270, 812, 180, 26])], [token("40", [360, 872, 30, 24])]),
+        ([token("コスト値-", [520, 820, 120, 30])], [token("20", [580, 872, 30, 24])]),
+    ]
+
+    def test_what_each_option_and_the_card_have_left(self):
+        # 未到上限：选项上方「あと N回」，「実行する」上方「合計あと N回」（ラブリーウインク+ 共可改造 2 次）。
+        limits = [([token("あと2回", [105, 788, 70, 20])], []), ([token("あと1回", [325, 788, 70, 20])], []), ([token("あと1回", [545, 788, 70, 20])], [])]
+        footer = [token("合計あと1回", [440, 1012, 110, 22])]
+        fields = customize_fields([token("70", [372, 98, 50, 30])], [], [], self.MENU, self.WINK, limits, footer)
+        self.assertEqual([(option["left"], option["capped"]) for option in fields["options"]], [(2, False), (1, False), (1, False)])
+        self.assertEqual((fields["total_left"], fields["cards_left"]), (1, None))
+
+    def test_a_card_at_its_limit(self):
+        # 改造次数用完：各选项下方「カスタマイズ上限」（读成「カス夕マイズ上限」也算），「一覧に戻る」上方为本次还可改造的卡牌数。
+        limits = [([], [token("カスタマイズ上限", [55, 895, 175, 22])]), ([], [token("カス夕マイズ上限", [275, 895, 175, 22])]), ([], [token("カスタマイズ上限", [492, 895, 170, 22])])]
+        fields = customize_fields([token("0", [400, 98, 30, 30])], [], [], self.MENU, self.WINK, limits, [token("あと1枚", [170, 1012, 90, 22])])
+        self.assertEqual([(option["left"], option["capped"]) for option in fields["options"]], [(None, True)] * 3)
+        self.assertEqual((fields["total_left"], fields["cards_left"]), (None, 1))
+        # 低置信度的「上限」不算。
+        limits[0] = ([], [token("カスタマイズ上限", [55, 895, 175, 22], 0.4)])
+        self.assertFalse(customize_fields([], [], [], self.MENU, self.WINK, limits, [])["options"][0]["capped"])
+
+    def test_the_total_read_as_two_texts(self):
+        # 「合計」与「あと N回」被拆开：画面右半（「実行する」上方）的「あと N回」才是总次数。
+        footer = [token("あと1枚", [170, 1012, 90, 22]), token("合計", [440, 1012, 40, 22]), token("あと2回", [482, 1012, 70, 22])]
+        fields = customize_fields([], [], [], self.MENU, self.WINK, None, footer)
+        self.assertEqual((fields["total_left"], fields["cards_left"]), (2, 1))
+        self.assertNotIn("left", fields["options"][0])
+        self.assertIsNone(customize_fields([], [], [], self.MENU, self.WINK, None, [token("あと2回", [170, 1012, 90, 22])])["total_left"])
 
 
 class SelectedOptionTest(unittest.TestCase):
@@ -264,6 +303,50 @@ class ConsultReadingTest(unittest.TestCase):
 
     def test_other_screens(self):
         self.assertEqual(self.read("相談", [], [], [token("520", [372, 98, 50, 30])]), {"p": 520, "label": "相談"})
+
+
+class FakeCatalog:
+    """卡牌名查库：都查不到。"""
+
+    def match(self, text, confidence):
+        return {}
+
+
+class CustomizeReadingTest(unittest.TestCase):
+    def setUp(self):
+        from utils.image_io import encode_png
+
+        root = ROOT / "debug/research/produce/tests"
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="customize_", dir=root)
+        self.addCleanup(temporary.cleanup)
+        self.mailbox = Path(temporary.name)
+        (self.mailbox / "frame.png").write_bytes(encode_png(np.zeros((1280, 720, 3), dtype=np.uint8)))
+
+    def test_limits_are_read_where_the_menu_shows_them(self):
+        label, price = option_rois(0)
+        badge, limit = limit_rois(1)
+        vision = FakeVision(
+            [
+                (P_COUNTER_ROI, [token("170", [372, 98, 50, 30])]),
+                (CUSTOMIZE_MENU_ROI, [token("カスタマイズメニュー", [255, 762, 200, 22])]),
+                (CUSTOMIZE_TITLE_ROI, [token("夢色リップ+", [196, 170, 180, 34])]),
+                (label, [token("条件変更", [90, 820, 100, 30])]),
+                (price, [token("70", [140, 872, 30, 24])]),
+                (option_rois(1)[0], [token("元気追加", [310, 820, 100, 30])]),
+                (option_rois(1)[1], [token("70", [360, 872, 30, 24])]),
+                (limit_rois(0)[1], [token("カスタマイズ上限", [55, 895, 175, 22])]),
+                (badge, []),
+                (limit, [token("カスタマイズ上限", [275, 895, 175, 22])]),
+                (CUSTOMIZE_FOOTER_ROI, [token("あと1枚", [170, 1012, 90, 22])]),
+            ]
+        )
+        fields = customize_reading(vision, FakeCatalog(), self.mailbox, {"frame": "frame.png"})
+        self.assertEqual(
+            fields["options"],
+            [{"label": "条件変更", "price": 70, "left": None, "capped": True}, {"label": "元気追加", "price": 70, "left": None, "capped": True}],
+        )
+        self.assertEqual((fields["p"], fields["card"], fields["total_left"], fields["cards_left"]), (170, None, None, 1))
 
 
 class FollowTest(unittest.TestCase):

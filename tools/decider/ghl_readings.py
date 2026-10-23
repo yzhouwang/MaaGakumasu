@@ -8,7 +8,8 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
 - reward：奖励种类（技能卡 card、P 饮料 drink、P 道具 item；开局奖励的画面与饮料奖励相同，由 GHL 按位置区分）、
   各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
-- customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称与价格、选中的选项与其价格；
+- customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称、价格与改造上限（还可改造的次数或「カスタマイズ上限」）、
+  选中的选项与其价格，以及这张卡还可改造的总次数（「合計あと N回」）与本次特别指导还可改造的卡牌数（「あと N枚」）；
 - consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；交換確認对话框另读商品名称、种类与交换前后的 P 点数，
   スキルカード強化、スキルカード削除对话框另读动作、卡牌名称（强化为强化前的卡牌）与前后的 P 点数；
 - 其余种类：种类与答复。
@@ -49,6 +50,12 @@ OPTION_LEFT = (38, 257, 476)
 OPTION_WIDTH = 207
 OPTION_LABEL_ROWS = (808, 60)
 OPTION_PRICE_ROWS = (866, 36)
+# 改造上限：选项上方的「あと N回」为该选项还可改造的次数，不能再改造的选项下方改为「カスタマイズ上限」（选项已到最高等级，
+# 或这张卡的改造次数已用完）；「実行する」上方的「合計あと N回」为这张卡还可改造的总次数（游戏数据 maxCustomizeCount
+# 减去已改造的次数，各选项的每一级都算一次），「一覧に戻る」上方的「あと N枚」为本次特别指导还可改造的卡牌数。
+OPTION_BADGE_ROWS = (782, 30)
+OPTION_LIMIT_ROWS = (890, 32)
+CUSTOMIZE_FOOTER_ROI = [80, 1000, 560, 46]
 # 选项卡上下缘之外的两条横带：只有选中项的括号是橙色。
 SELECTION_BANDS = ((784, 800), (904, 919))
 # 相谈（商店）：左上角的画面标签（相談；卡牌强化、删除画面为「強化」「削除」）。确认对话框随说明的长短向上伸展（强化对话框
@@ -196,25 +203,54 @@ def option_rois(slot):
     return [left, OPTION_LABEL_ROWS[0], OPTION_WIDTH, OPTION_LABEL_ROWS[1]], [left + 55, OPTION_PRICE_ROWS[0], 130, OPTION_PRICE_ROWS[1]]
 
 
-def customize_fields(p_items, cost_items, title_items, menu_items, slots):
+def limit_rois(slot):
+    """选项上方「あと N回」与下方「カスタマイズ上限」的区域。"""
+    left = OPTION_LEFT[slot]
+    return [left, OPTION_BADGE_ROWS[0], OPTION_WIDTH, OPTION_BADGE_ROWS[1]], [left, OPTION_LIMIT_ROWS[0], OPTION_WIDTH, OPTION_LIMIT_ROWS[1]]
+
+
+def count_in(items, pattern, confidence=0.6):
+    """读数中第一个匹配 pattern（一个数字分组）的次数，从左到右，读不到为 None。"""
+    for item in sorted(items, key=lambda item: item["box"][0]):
+        match = re.search(pattern, item["text"])
+        if match and item["confidence"] >= confidence:
+            return int(match.group(1))
+    return None
+
+
+def customize_fields(p_items, cost_items, title_items, menu_items, slots, limits=None, footer_items=None):
     """
     特别指导画面的文字 → P 点数；改造预览画面另有卡牌名文字、各选项（名称与价格）与选中项的价格。
+    给出 limits 时各选项另有 left（「あと N回」，读不到为 None）与 capped（「カスタマイズ上限」）；给出 footer_items 时另有
+    total_left（「合計あと N回」）与 cards_left（「あと N枚」），画面上没有或读不到为 None。
 
     Args:
         slots: 每个选项位置的 (名称文字, 价格文字)，从左到右；名称为空的位置没有选项。
+        limits: 每个选项位置的 (上方「あと N回」的文字, 下方「カスタマイズ上限」的文字)，与 slots 对应。
+        footer_items: 「一覧に戻る」与「実行する」上方的文字。
     """
     fields = {"p": first_number(p_items)}
     if not any("カスタマイズ" in item["text"] for item in menu_items):
         return fields
     options = []
-    for label_items, price_items in slots:
+    for slot, (label_items, price_items) in enumerate(slots):
         # 两行的名称按行拼接；Maa 偶尔将片假名「タ」误识为形近的「夕」。
         label = "".join(item["text"] for item in sorted(label_items, key=lambda item: (item["box"][1], item["box"][0])) if item["confidence"] >= 0.6)
         if not label:
             break
-        options.append({"label": label.replace("夕", "タ"), "price": first_number(price_items)})
+        option = {"label": label.replace("夕", "タ"), "price": first_number(price_items)}
+        if limits is not None:
+            badge_items, limit_items = limits[slot]
+            # 「カスタマイズ上限」常被读成「カス夕マイズ上限」等，认「上限」二字。
+            option.update(left=count_in(badge_items, r"あと(\d+)回"), capped=any("上限" in item["text"] and item["confidence"] >= 0.6 for item in limit_items))
+        options.append(option)
     title = max(title_items, key=lambda item: item["confidence"], default=None)
-    return dict(fields, screen="preview", title=title, options=options, cost=first_number(cost_items))
+    fields = dict(fields, screen="preview", title=title, options=options, cost=first_number(cost_items))
+    if footer_items is not None:
+        # 「合計」与「あと N回」可能被拆成两段文字：「実行する」上方（画面右半）的「あと N回」即为总次数。
+        right = [item for item in footer_items if item["box"][0] + item["box"][2] / 2 >= 360]
+        fields.update(total_left=count_in(right, r"あと(\d+)回"), cards_left=count_in(footer_items, r"あと(\d+)枚"))
+    return fields
 
 
 def selected_option(array):
@@ -237,19 +273,22 @@ def selected_option(array):
 
 
 def customize_reading(vision, catalog, mailbox, request):
-    """特别指导：P 点数；改造预览画面另有卡牌名（查库，未识别为 None）、菜单选项、选中项及其价格。"""
+    """特别指导：P 点数；改造预览画面另有卡牌名（查库，未识别为 None）、菜单选项及其改造上限、选中项及其价格、这张卡还可改造的总次数与本次还可改造的卡牌数。"""
     from utils.image_io import read_image
     from produce.console import card_name
     from produce.analysis import normalized_image
 
     array = normalized_image(read_image(mailbox / request["frame"]))
     slots = [tuple(texts(vision, array, roi) for roi in option_rois(slot)) for slot in range(len(OPTION_LEFT))]
+    limits = [tuple(texts(vision, array, roi) for roi in limit_rois(slot)) for slot in range(len(OPTION_LEFT))]
     fields = customize_fields(
         texts(vision, array, P_COUNTER_ROI),
         texts(vision, array, CUSTOMIZE_COST_ROI),
         texts(vision, array, CUSTOMIZE_TITLE_ROI),
         texts(vision, array, CUSTOMIZE_MENU_ROI),
         slots,
+        limits,
+        texts(vision, array, CUSTOMIZE_FOOTER_ROI),
     )
     if fields.get("screen") != "preview":
         return fields
