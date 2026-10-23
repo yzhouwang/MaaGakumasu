@@ -603,6 +603,17 @@ class GhlPlanTest(HandoffTest):
         self.assertTrue(all("GHL's plan for this visit" not in call["prompt"] for call in self.calls))
         self.assertNotIn("ghl_plan", self.responses()["002"])
 
+    def test_a_first_step_that_fell_back_does_not_hand_the_plan_on(self):
+        # The model's call for the first step failed (fallback): the visit began without the plan, so later steps decide alone.
+        self.write_plan("consult-1", id="001")
+        self.answers = [None]
+        decider = self.decider()
+        self.ask(decider, "001", "consult", self.consult, "done", context={"session_key": "consult-1", "step": 0})
+        self.assertEqual(self.responses()["001"]["source"], "fallback")
+        self.assertNotIn("ghl_plan", self.responses()["001"])
+        self.ask(decider, "002", "consult", self.consult, "done", context={"session_key": "consult-1", "step": 1})
+        self.assertNotIn("GHL's plan for this visit", self.calls[-1]["prompt"])
+
     def test_no_plan_when_ghl_skips_and_none_for_other_kinds(self):
         self.write_plan("consult-1", skip="replay state unreliable")
         decider = self.decider()

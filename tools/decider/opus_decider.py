@@ -552,7 +552,8 @@ class Decider:
                 response["reason"] = f"decider error: {exc}"
         if ghl_note:
             response["ghl"] = ghl_note
-        if plan:
+        # 只在模型按计划作答时记下：第一步回退（模型调用失败）时访问由原有逻辑开始，之后各步不再接手计划
+        if plan and response["source"] == "model":
             response["ghl_plan"] = plan["session_key"]
         self.finish(path, request, reading, prompt, response)
 
