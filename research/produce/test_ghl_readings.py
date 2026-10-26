@@ -1,5 +1,5 @@
 """牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览（含改造上限）、
-相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除），以及实况读取的断行恢复与失败重试。
+相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除）与主画面的服务按钮、「リフレッシュ」次数和扣款气泡，以及实况读取的断行恢复与失败重试。
 
 使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。临时文件写入 debug/research/produce/tests/。
 """
@@ -16,10 +16,13 @@ sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 from ghl_frame import LESSON_ICON, lesson_attribute
 from ghl_readings import (
     OPTION_LEFT,
+    P_SPENT_ROI,
+    REFRESH_ROI,
     OPTION_WIDTH,
     P_COUNTER_ROI,
     EXCHANGE_P_ROI,
     SELECTION_BANDS,
+    SERVICE_ROW_ROI,
     SCREEN_LABEL_ROI,
     CUSTOMIZE_MENU_ROI,
     CUSTOMIZE_TITLE_ROI,
@@ -31,6 +34,7 @@ from ghl_readings import (
     week_fields,
     completed_ids,
     reward_fields,
+    service_fields,
     consult_reading,
     exchange_fields,
     read_with_retry,
@@ -250,6 +254,71 @@ class ExchangeFieldsTest(unittest.TestCase):
         self.assertIsNone(exchange_fields([token("スキルカード強化追加", [296, 840, 250, 27]), token("ファンサの基本", [206, 900, 205, 31])], P_LINE))
 
 
+# 相谈主画面的按钮行：两个服务都用过（「交換済」，下次 125），未用的按钮只有名称与价格。
+USED_ROW = [
+    token("強化❤ 次 125", [123, 950, 191, 35], 0.85),
+    token("交換済", [167, 978, 66, 28]),
+    token("削除次125", [437, 947, 195, 42]),
+    token("交換済", [483, 977, 66, 29]),
+]
+OPEN_ROW = [token("強化", [124, 950, 67, 36]), token("150", [241, 954, 57, 28]), token("削除", [440, 950, 65, 36]), token("125", [560, 954, 53, 27])]
+REFRESH = [token("あと1回", [69, 1033, 79, 26]), token("リフレッシュ", [41, 1072, 143, 25])]
+
+
+class ServiceFieldsTest(unittest.TestCase):
+    def test_used_services_show_the_next_price(self):
+        self.assertEqual(
+            service_fields(USED_ROW, REFRESH, [token("P", [283, 97, 38, 35])]),
+            {"upgrade": {"used": True, "price": 125}, "remove": {"used": True, "price": 125}, "refreshes": 1, "spent": None},
+        )
+
+    def test_open_services_and_no_refresh_button(self):
+        # 「リフレッシュ」用完后按钮消失：服务按钮读到而该处没有文字，剩余 0 次。
+        fields = service_fields(OPEN_ROW, [], [])
+        self.assertEqual(fields, {"upgrade": {"used": False, "price": 150}, "remove": {"used": False, "price": 125}, "refreshes": 0, "spent": None})
+        # 一个用过、一个未用。
+        row = USED_ROW[:2] + [token("削除", [440, 950, 65, 36]), token("100", [558, 954, 57, 28])]
+        self.assertEqual(service_fields(row, REFRESH, [])["remove"], {"used": False, "price": 100})
+
+    def test_split_and_misread_texts(self):
+        # 「交換済」的勾盖住名称的第二个字；P 图标读成「0」，在价格左边，不与价格连成一个数；各段分开读到。
+        row = [token("強 次150", [117, 947, 202, 41], 0.9), token("交換済", [166, 979, 69, 27]), token("削除0次125", [439, 950, 191, 37], 0.94), token("交換済", [484, 979, 65, 27])]
+        fields = service_fields(row, REFRESH, [])
+        self.assertEqual((fields["upgrade"], fields["remove"]), ({"used": True, "price": 150}, {"used": True, "price": 125}))
+        row = [token("強化", [124, 950, 67, 36]), token("0", [205, 955, 20, 25]), token("100", [245, 954, 52, 27])]
+        row += [token("削除", [440, 950, 65, 36]), token("次", [520, 954, 20, 27]), token("交換済", [483, 977, 66, 29]), token("150", [560, 954, 53, 27])]
+        fields = service_fields(row, [token("あと", [69, 1033, 40, 26]), token("1回", [110, 1033, 38, 26])], [])
+        self.assertEqual((fields["upgrade"], fields["remove"], fields["refreshes"]), ({"used": False, "price": 100}, {"used": True, "price": 150}, 1))
+        # 价格读不到。
+        self.assertEqual(service_fields([token("強化", [124, 950, 67, 36]), token("削除", [440, 950, 65, 36])], REFRESH, [])["upgrade"], {"used": False, "price": None})
+
+    def test_covered_buttons_are_not_read(self):
+        # 提示「…を強化しました」盖住按钮行（透过它还能读到扣款前的按钮）；获得动画的说明框盖住「強化」；名称置信度低；
+        # 说明框里的「強」不在按钮名称的位置。这时「リフレッシュ」处没有文字也不算按钮消失。
+        for row in (
+            OPEN_ROW + [token("輝くキミへを強化しました", [116, 1000, 323, 30])],
+            [token("やる気+6", [177, 949, 111, 31]), token("削除100", [442, 954, 171, 28])],
+            [token("強化", [124, 950, 67, 36], 0.5)] + OPEN_ROW[1:],
+            [token("強気+2", [178, 949, 110, 31])] + OPEN_ROW[2:],
+        ):
+            self.assertEqual(service_fields(row, [], []), {"upgrade": None, "remove": None, "refreshes": None, "spent": None}, row)
+
+    def test_refresh_count_not_read(self):
+        # 按钮在而次数读不到，或该处有别的文字（说明框）：不知道。
+        self.assertIsNone(service_fields(OPEN_ROW, [token("リフレッシュ", [41, 1072, 143, 25])], [])["refreshes"])
+        self.assertIsNone(service_fields(OPEN_ROW, [token("重複不可レッスン中1回", [85, 1024, 260, 24])], [])["refreshes"])
+        self.assertEqual(service_fields(OPEN_ROW, [token("1", [10, 1025, 200, 90], 0.16)], [])["refreshes"], 0)
+
+    def test_the_bubble_of_a_payment(self):
+        # 扣款时 P 点数左侧的气泡：「-100」，或刚出现时的小气泡；没有负号的数（离开相谈时背后的窗框）、P 图标都不算。
+        self.assertEqual(service_fields(OPEN_ROW, REFRESH, [token("-100", [179, 97, 78, 34])])["spent"], 100)
+        self.assertEqual(service_fields(OPEN_ROW, REFRESH, [token("-150", [239, 103, 44, 21])])["spent"], 150)
+        for items in ([token("1", [150, 88, 140, 50], 0.65)], [token("P", [283, 97, 38, 35])], [token("-5", [282, 97, 30, 30])], [token("-100", [179, 97, 78, 34], 0.4)]):
+            self.assertIsNone(service_fields(OPEN_ROW, REFRESH, items)["spent"], items)
+        # 盖住按钮的画面也读气泡。
+        self.assertEqual(service_fields([], [], [token("-125", [179, 97, 78, 34])])["spent"], 125)
+
+
 class FakeVision:
     """按 ROI 返回替身 OCR 文字。"""
 
@@ -284,13 +353,16 @@ class ConsultReadingTest(unittest.TestCase):
         self.mailbox = Path(temporary.name)
         (self.mailbox / "frame.png").write_bytes(encode_png(np.zeros((1280, 720, 3), dtype=np.uint8)))
 
-    def read(self, label, dialog, p_line, counter=()):
+    def read(self, label, dialog, p_line, counter=(), row=(), refresh=(), spent=()):
         vision = FakeVision(
             [
                 (SCREEN_LABEL_ROI, [token(label, [59, 39, 63, 36])]),
                 (P_COUNTER_ROI, list(counter)),
                 (EXCHANGE_DIALOG_ROI, dialog),
                 (EXCHANGE_P_ROI, p_line),
+                (SERVICE_ROW_ROI, list(row)),
+                (REFRESH_ROI, list(refresh)),
+                (P_SPENT_ROI, list(spent)),
             ]
         )
         return consult_reading(vision, FakeRewards(), self.mailbox, {"frame": "frame.png"})
@@ -313,8 +385,21 @@ class ConsultReadingTest(unittest.TestCase):
         dialog = [item if item["text"] != "ファンサの基本" else token("初星水", item["box"]) for item in REMOVAL_DIALOG]
         self.assertIsNone(self.read("削除", dialog, P_LINE)["service"]["name"])
 
+    def test_the_main_screen_shows_the_services(self):
+        fields = self.read("相談", [], [], [token("420", [372, 98, 50, 30])], USED_ROW, REFRESH)
+        services = {"upgrade": {"used": True, "price": 125}, "remove": {"used": True, "price": 125}, "refreshes": 1, "spent": None}
+        self.assertEqual(fields, {"p": 420, "label": "相談", **services})
+        # 扣款动画中：按钮可能仍是扣款前的样子，照读，另记气泡。
+        fields = self.read("相談", [], [], [token("520", [372, 98, 50, 30])], OPEN_ROW, REFRESH, [token("-100", [179, 97, 78, 34])])
+        self.assertEqual((fields["upgrade"], fields["spent"]), ({"used": False, "price": 150}, 100))
+        # 按钮读不到：都为 None。
+        none = {"upgrade": None, "remove": None, "refreshes": None, "spent": None}
+        self.assertEqual(self.read("相談", [], [], [token("520", [372, 98, 50, 30])]), {"p": 520, "label": "相談", **none})
+
     def test_other_screens(self):
-        self.assertEqual(self.read("相談", [], [], [token("520", [372, 98, 50, 30])]), {"p": 520, "label": "相談"})
+        # 卡牌列表（强化、删除）与对话框不读服务按钮。
+        self.assertEqual(self.read("強化", [], [], [], USED_ROW, REFRESH), {"p": None, "label": "強化"})
+        self.assertNotIn("upgrade", self.read("相談", REMOVAL_DIALOG, P_LINE, (), USED_ROW, REFRESH))
 
 
 class FakeCatalog:

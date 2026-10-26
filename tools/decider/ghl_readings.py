@@ -10,7 +10,8 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
 - customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称、价格与改造上限（还可改造的次数或「カスタマイズ上限」）、
   选中的选项与其价格，以及这张卡还可改造的总次数（「合計あと N回」）与本次特别指导还可改造的卡牌数（「あと N枚」）；
-- consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；交換確認对话框另读商品名称、种类与交换前后的 P 点数，
+- consult（相谈）：顶部的 P 点数、左上角的画面标签（相談、強化、削除等）；相谈主画面另读两个服务按钮（未用时的价格，或「交換済」
+  与下次的价格）、「リフレッシュ」的剩余次数与 P 点数左侧正在扣除的 P；交換確認对话框另读商品名称、种类与交换前后的 P 点数，
   スキルカード強化、スキルカード削除对话框另读动作、卡牌名称（强化为强化前的卡牌）与前后的 P 点数；
 - 其余种类：种类与答复。
 
@@ -68,6 +69,14 @@ EXCHANGE_P_ROI = [80, 990, 560, 60]
 SHOP_DIALOGS = (("交換確認", "交換", "buy"), ("スキルカード強化", "強化", "upgrade"), ("スキルカード削除", "削除", "remove"))
 # 标题在对话框左缘；卡牌说明从图标右侧（x ≥ 190）开始，其中的同样字样不算标题。
 DIALOG_TITLE_RIGHT = 190
+# 相谈主画面的服务按钮：左为「強化」、右为「削除」，未用时显示价格；每批商品各可用一次，用过后按钮盖上「交換済」并显示下次的价格
+# （「次 125」），「リフレッシュ」换一批商品时两者恢复可用。按钮下方左侧的「リフレッシュ」上方为剩余次数（「あと1回」），用完后按钮消失。
+# P 点数左侧的气泡（「-100」）为正在扣除的 P：扣款动画期间按钮可能仍是扣款前的样子。
+SERVICE_ROW_ROI = [40, 930, 640, 80]
+# 按钮名称、读数字段与名称左缘的 x：「交換済」的勾常盖住名称的第二个字（「強 次150」），按第一个字与位置认按钮。
+SERVICE_BUTTONS = (("強化", "upgrade", 120), ("削除", "remove", 440))
+REFRESH_ROI = [10, 1025, 200, 90]
+P_SPENT_ROI = [150, 88, 140, 50]
 REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
 ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
 
@@ -147,11 +156,43 @@ def exchange_fields(dialog_items, p_items):
     }
 
 
+def service_fields(row_items, refresh_items, spent_items):
+    """
+    相谈主画面的文字 → 两个服务按钮 upgrade（強化）与 remove（削除）：used 为是否盖着「交換済」，price 为下一次的价格（未用时为
+    按钮上的价格，用过后为「次 N」，读不到为 None）；两个按钮的名称都读到才给出，否则为 None（提示「…を強化しました」或获得
+    动画盖住了按钮）。refreshes 为「リフレッシュ」的剩余次数（「あと N回」）：按钮读到而次数读不到、或该处有别的文字时为 None，
+    服务按钮读到而该处没有文字时为 0（按钮已消失）。spent 为 P 点数左侧气泡中正在扣除的 P，没有气泡为 None。
+    """
+    row = [item for item in row_items if item["confidence"] >= 0.6]
+    buttons = {"upgrade": None, "remove": None}
+    if not any("しました" in item["text"] for item in row):
+        halves = [[item for item in row if (item["box"][0] + item["box"][2] / 2 < 360) == (side == 0)] for side in (0, 1)]
+        found = [any(item["text"].startswith(word[0]) and abs(item["box"][0] - x) <= 30 for item in half) for half, (word, _, x) in zip(halves, SERVICE_BUTTONS)]
+        if all(found):
+            for half, (_, key, _) in zip(halves, SERVICE_BUTTONS):
+                # 各段之间留空格：P 图标偶尔读成「0」，不与价格连成一个数。
+                text = " ".join(item["text"] for item in sorted(half, key=lambda item: item["box"][0]))
+                # 用过的按钮价格前有「次」；未用的按钮价格在最右（P 图标在价格左边）。
+                used = "交換済" in text or "次" in text
+                numbers = re.findall(r"\d+", text.split("次")[-1] if "次" in text else text)
+                buttons[key] = {"used": used, "price": int(numbers[-1]) if numbers else None}
+    refresh = [item for item in refresh_items if item["confidence"] >= 0.6 and item["text"]]
+    refreshes = count_in(refresh, r"あと(\d+)回")
+    if refreshes is None and not refresh and buttons["upgrade"] is not None:
+        refreshes = 0
+    # 气泡在 P 图标左边（中心 x < 275；图标被区域切开时可能读成别的字），数字前有负号：离开相谈时背后的窗框会读成「1」。
+    bubbles = [re.fullmatch(r"[-－ー一](\d+)", item["text"]) for item in spent_items if item["confidence"] >= 0.6 and item["box"][0] + item["box"][2] / 2 < 275]
+    spent = next((int(match.group(1)) for match in bubbles if match), None)
+    return dict(buttons, refreshes=refreshes, spent=spent)
+
+
 def consult_reading(vision, rewards, mailbox, request):
     """
-    相谈：P 点数与画面标签；交換確認对话框另有 exchange：商品名称（查库，读不到为 None）、种类与交换前后的 P 点数；
-    スキルカード強化、スキルカード削除对话框另有 service：动作（upgrade、remove）、卡牌名称（强化为强化前的卡牌，查库，
-    读不到或不是技能卡为 None）与前后的 P 点数。卡牌另记一栏，只认 exchange 的读取方不会把强化、删除当成购买。
+    相谈：P 点数与画面标签；相谈主画面（标签「相談」，没有对话框）另有两个服务按钮 upgrade、remove（是否「交換済」与下一次的价格）、
+    「リフレッシュ」的剩余次数 refreshes 与正在扣除的 P spent（见 service_fields）；交換確認对话框另有 exchange：商品名称
+    （查库，读不到为 None）、种类与交换前后的 P 点数；スキルカード強化、スキルカード削除对话框另有 service：动作（upgrade、remove）、
+    卡牌名称（强化为强化前的卡牌，查库，读不到或不是技能卡为 None）与前后的 P 点数。卡牌另记一栏，只认 exchange 的读取方不会把
+    强化、删除当成购买。
     """
     from utils.image_io import read_image
     from produce.analysis import normalized_image
@@ -161,6 +202,8 @@ def consult_reading(vision, rewards, mailbox, request):
     fields = {"p": first_number(texts(vision, array, P_COUNTER_ROI)), "label": label}
     dialog = exchange_fields(texts(vision, array, EXCHANGE_DIALOG_ROI), texts(vision, array, EXCHANGE_P_ROI))
     if dialog is None:
+        if "相談" in label:
+            fields.update(service_fields(texts(vision, array, SERVICE_ROW_ROI), texts(vision, array, REFRESH_ROI), texts(vision, array, P_SPENT_ROI)))
         return fields
     name, kind = offer_name(rewards.match_tokens([dialog["name"]]) if dialog["name"] else {})
     if dialog["action"] == "buy":
