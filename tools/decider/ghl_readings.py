@@ -76,6 +76,8 @@ SERVICE_ROW_ROI = [40, 930, 640, 80]
 # 按钮名称、读数字段与名称左缘的 x：「交換済」的勾常盖住名称的第二个字（「強 次150」），按第一个字与位置认按钮。
 SERVICE_BUTTONS = (("強化", "upgrade", 120), ("削除", "remove", 440))
 REFRESH_ROI = [10, 1025, 200, 90]
+# 「あと N回」的红色标记（x, y, 宽, 高）：按钮在时有约 2400 个红色像素（扣款动画变暗时也有），按钮消失后为 0。
+REFRESH_BADGE = (55, 1030, 110, 36)
 P_SPENT_ROI = [150, 88, 140, 50]
 REWARD_KINDS = (("スキルカード", "card"), ("ドリンク", "drink"), ("アイテム", "item"))
 ITEM_KINDS = {"skill_card": "card", "drink": "drink", "p_item": "item"}
@@ -156,12 +158,21 @@ def exchange_fields(dialog_items, p_items):
     }
 
 
-def service_fields(row_items, refresh_items, spent_items):
+def refresh_badge(array):
+    """「リフレッシュ」上方的红色次数标记是否在画面上：按色比判断，扣款动画中画面变暗也认得出。"""
+    x, y, width, height = REFRESH_BADGE
+    region = array[y : y + height, x : x + width].astype(int)
+    blue, green, red = region[..., 0], region[..., 1], region[..., 2]
+    return int(((red > 120) & (green < 0.55 * red) & (blue < 0.65 * red)).sum()) >= 200
+
+
+def service_fields(row_items, refresh_items, spent_items, badge=False):
     """
     相谈主画面的文字 → 两个服务按钮 upgrade（強化）与 remove（削除）：used 为是否盖着「交換済」，price 为下一次的价格（未用时为
     按钮上的价格，用过后为「次 N」，读不到为 None）；两个按钮的名称都读到才给出，否则为 None（提示「…を強化しました」或获得
-    动画盖住了按钮）。refreshes 为「リフレッシュ」的剩余次数（「あと N回」）：按钮读到而次数读不到、或该处有别的文字时为 None，
-    服务按钮读到而该处没有文字时为 0（按钮已消失）。spent 为 P 点数左侧气泡中正在扣除的 P，没有气泡为 None。
+    动画盖住了按钮）。spent 为 P 点数左侧气泡中正在扣除的 P，没有气泡为 None。refreshes 为「リフレッシュ」的剩余次数
+    （「あと N回」），读不到为 None；按钮已消失时为 0，这只在画面确实没有它时给出：服务按钮读到、没有扣款气泡、该处没有文字，
+    也没有红色的次数标记（badge，见 refresh_badge）。文字置信度低读不出时按钮仍在，不能当作 0。
     """
     row = [item for item in row_items if item["confidence"] >= 0.6]
     buttons = {"upgrade": None, "remove": None}
@@ -176,13 +187,13 @@ def service_fields(row_items, refresh_items, spent_items):
                 used = "交換済" in text or "次" in text
                 numbers = re.findall(r"\d+", text.split("次")[-1] if "次" in text else text)
                 buttons[key] = {"used": used, "price": int(numbers[-1]) if numbers else None}
-    refresh = [item for item in refresh_items if item["confidence"] >= 0.6 and item["text"]]
-    refreshes = count_in(refresh, r"あと(\d+)回")
-    if refreshes is None and not refresh and buttons["upgrade"] is not None:
-        refreshes = 0
     # 气泡在 P 图标左边（中心 x < 275；图标被区域切开时可能读成别的字），数字前有负号：离开相谈时背后的窗框会读成「1」。
     bubbles = [re.fullmatch(r"[-－ー一](\d+)", item["text"]) for item in spent_items if item["confidence"] >= 0.6 and item["box"][0] + item["box"][2] / 2 < 275]
     spent = next((int(match.group(1)) for match in bubbles if match), None)
+    refresh = [item for item in refresh_items if item["confidence"] >= 0.6 and item["text"]]
+    refreshes = count_in(refresh, r"あと(\d+)回")
+    if refreshes is None and not refresh and not badge and spent is None and buttons["upgrade"] is not None:
+        refreshes = 0
     return dict(buttons, refreshes=refreshes, spent=spent)
 
 
@@ -203,7 +214,8 @@ def consult_reading(vision, rewards, mailbox, request):
     dialog = exchange_fields(texts(vision, array, EXCHANGE_DIALOG_ROI), texts(vision, array, EXCHANGE_P_ROI))
     if dialog is None:
         if "相談" in label:
-            fields.update(service_fields(texts(vision, array, SERVICE_ROW_ROI), texts(vision, array, REFRESH_ROI), texts(vision, array, P_SPENT_ROI)))
+            row, refresh, spent = (texts(vision, array, roi) for roi in (SERVICE_ROW_ROI, REFRESH_ROI, P_SPENT_ROI))
+            fields.update(service_fields(row, refresh, spent, refresh_badge(array)))
         return fields
     name, kind = offer_name(rewards.match_tokens([dialog["name"]]) if dialog["name"] else {})
     if dialog["action"] == "buy":

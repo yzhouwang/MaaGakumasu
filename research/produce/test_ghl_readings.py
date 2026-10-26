@@ -20,6 +20,7 @@ from ghl_readings import (
     REFRESH_ROI,
     OPTION_WIDTH,
     P_COUNTER_ROI,
+    REFRESH_BADGE,
     EXCHANGE_P_ROI,
     SELECTION_BANDS,
     SERVICE_ROW_ROI,
@@ -33,6 +34,7 @@ from ghl_readings import (
     option_rois,
     week_fields,
     completed_ids,
+    refresh_badge,
     reward_fields,
     service_fields,
     consult_reading,
@@ -307,7 +309,11 @@ class ServiceFieldsTest(unittest.TestCase):
         # 按钮在而次数读不到，或该处有别的文字（说明框）：不知道。
         self.assertIsNone(service_fields(OPEN_ROW, [token("リフレッシュ", [41, 1072, 143, 25])], [])["refreshes"])
         self.assertIsNone(service_fields(OPEN_ROW, [token("重複不可レッスン中1回", [85, 1024, 260, 24])], [])["refreshes"])
-        self.assertEqual(service_fields(OPEN_ROW, [token("1", [10, 1025, 200, 90], 0.16)], [])["refreshes"], 0)
+        # 只有置信度低的文字：红色标记在则按钮在（次数读不到），不在才是按钮消失；扣款动画中也不判定按钮消失。
+        low = [token("1", [10, 1025, 200, 90], 0.16)]
+        self.assertIsNone(service_fields(OPEN_ROW, low, [], badge=True)["refreshes"])
+        self.assertEqual(service_fields(OPEN_ROW, low, [])["refreshes"], 0)
+        self.assertIsNone(service_fields(OPEN_ROW, [], [token("-100", [179, 97, 78, 34])])["refreshes"])
 
     def test_the_bubble_of_a_payment(self):
         # 扣款时 P 点数左侧的气泡：「-100」，或刚出现时的小气泡；没有负号的数（离开相谈时背后的窗框）、P 图标都不算。
@@ -317,6 +323,21 @@ class ServiceFieldsTest(unittest.TestCase):
             self.assertIsNone(service_fields(OPEN_ROW, REFRESH, items)["spent"], items)
         # 盖住按钮的画面也读气泡。
         self.assertEqual(service_fields([], [], [token("-125", [179, 97, 78, 34])])["spent"], 125)
+
+
+class RefreshBadgeTest(unittest.TestCase):
+    def frame(self, bgr, size=(110, 36), background=(200, 220, 235)):
+        x, y, _, _ = REFRESH_BADGE
+        image = np.full((1280, 720, 3), background, dtype=np.uint8)
+        image[y : y + size[1], x : x + size[0]] = bgr
+        return image
+
+    def test_the_red_count_badge(self):
+        # 「あと1回」的红色标记（BGR），扣款动画中变暗的也算；按钮消失后该处是笔记本的底色；零星的红色不算。
+        self.assertTrue(refresh_badge(self.frame((90, 60, 230))))
+        self.assertTrue(refresh_badge(self.frame((60, 40, 150))))
+        self.assertFalse(refresh_badge(self.frame((200, 220, 235))))
+        self.assertFalse(refresh_badge(self.frame((90, 60, 230), size=(10, 10))))
 
 
 class FakeVision:
