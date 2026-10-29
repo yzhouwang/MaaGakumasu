@@ -104,7 +104,7 @@ class InteractiveLoopTest(unittest.TestCase):
     def test_scroll_wait_and_done(self):
         result, controller, decider = self.run_loop([{"id": "scroll_down"}, {"id": "scroll_up"}, {"id": "done"}])
         self.assertTrue(result)
-        self.assertEqual(controller.swipes, [(360, 800, 360, 500), (360, 500, 360, 800)])
+        self.assertEqual(controller.swipes, [(360, 800, 360, 500), (360, 800, 360, 1100)])
 
     def test_no_answer_three_times_hands_back(self):
         result, controller, decider = self.run_loop([None, None, None])

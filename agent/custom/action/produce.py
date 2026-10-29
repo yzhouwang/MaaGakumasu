@@ -35,9 +35,10 @@ class ProduceConsultExternal(CustomAction):
         decider = ExternalDecider.load()
         if not decider:
             return True
+        # 最后一次相谈要强化、购买、刷新后再强化和购买：50 步不够（2026-10-29 第 50 步时还剩 583 P）
         return run_interactive(
             context, decider, "consult", is_done=lambda image: False,
-            session_key=f"consult-{time.strftime('%Y%m%d-%H%M%S')}", screen_info={"type": "consult"},
+            session_key=f"consult-{time.strftime('%Y%m%d-%H%M%S')}", screen_info={"type": "consult"}, max_steps=80,
         )
 
 

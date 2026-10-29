@@ -212,7 +212,8 @@ def run_interactive(
                 continue
             context.tasker.controller.post_click(x, y).wait()
         elif action in ("scroll_down", "scroll_up"):
-            begin, end = (800, 500) if action == "scroll_down" else (500, 800)
+            # 两个方向都从 y=800 起手：强化/删除弹窗上半是所选卡的详情，从那里起手的拖动不滚动下方的卡牌网格（约 y 690–1100）
+            begin, end = (800, 500) if action == "scroll_down" else (800, 1100)
             context.tasker.controller.post_swipe(360, begin, 360, end, 500).wait()
         else:
             time.sleep(1.0)
