@@ -539,6 +539,19 @@ class GhlFirstTest(unittest.TestCase):
         self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "Vi")
         self.assertEqual(ghl_choice(answer, request, self.scope, policy="reference")[0]["choice"], "Vo")
 
+    def test_ghl_override_wins_when_it_can_be_played(self):
+        # 课程周（--lessons r8）：GHL 的 override 优先于决策模型与参照策略；其候选不在画面上时照常取决策模型。
+        request = {"id": "r1", "kind": "week", "candidates": [{"id": "Vo"}, {"id": "Da"}, {"id": "Vi"}], "fallback": "Vo"}
+        answer = ghl("ghl/week", {"1": 0.3, "2": 0.5, "3": 0.2}, {"1": "Vo", "2": "Da", "3": "Vi"}, ref={"policy": "B1v2", "key": "2"})
+        self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "Da")
+        answer["override"] = {"policy": "lessons-r8", "key": "1", "live": "Vo"}
+        choice = ghl_choice(answer, request, self.scope)[0]
+        self.assertEqual(choice["choice"], "Vo")
+        self.assertTrue(choice["reason"].startswith("GHL lessons-r8"))
+        self.assertEqual(ghl_choice(answer, request, self.scope, policy="reference")[0]["choice"], "Vo")
+        answer["optionLive"]["1"] = None
+        self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "Da")
+
     def test_answers_file_and_ghl_only_response(self):
         mailbox = temporary_mailbox(self, "ghl_first_")
         answers =[ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_0"}, id="a"), ghl("ghl/battle-exam", {"1": 0.9}, {"1": "card_1"}, id="b")]

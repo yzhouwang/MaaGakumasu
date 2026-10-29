@@ -115,6 +115,7 @@ def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider",
     GHL 对请求的选择：范围内、且有本请求的候选可执行时返回 {"choice", "reason"}，否则返回 (None, 原因)。
 
     decider 策略取决策模型在可执行候选中概率最高的一项；reference 策略取 GHL 的参照策略（战斗 B4、其余 B1v2）。
+    GHL 给出 override（如 --lessons r8 时课程周的选择）且其候选可执行时，优先采用它，不论策略。
     课程中默认不采用饮料。职业课（class_option）的选项在 GHL 中是「上课:属性」，候选为属性。
     """
     task = answer.get("task")
@@ -134,6 +135,11 @@ def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider",
         return live in ids and (lesson_drinks or task != "ghl/battle-lesson" or not live.startswith("drink_"))
 
     texts = {option[0]: option[1] for option in answer.get("options") or []}
+    override = answer.get("override") or {}
+    if override.get("key"):
+        live = live_of(override["key"])
+        if allowed(live):
+            return {"choice": live, "reason": f"GHL {override.get('policy')}: {texts.get(override['key'], '')}"[:300]}, None
     if policy == "reference":
         ref = answer.get("ref") or {}
         live = live_of(ref.get("key"))
