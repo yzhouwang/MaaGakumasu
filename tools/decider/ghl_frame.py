@@ -7,6 +7,8 @@ GHL 的影子回放与决策模型按 LiveFrame 读取战斗状态（src/bridge/
 - b：Buff（goodImpressionTurns、motivation、halfCostTurns、doubleCostTurns、nullifyDebuff），未显示为 0；
 - gib：好印象增加量 [百分比, 回合]；gie：好印象效果百分比；sb：得分提升 [百分比, 回合或 None]；
 - hand：手牌名（从左到右，「+」为强化，读不出为「?」）。战斗中再次强化的「+」牌显示「++」，GHL 没有这种牌，记为「+」。
+  四五张手牌叠放时，右邻的牌盖住卡名末尾与卡面右缘的「+」：认出基础名而看不到强化标记的牌记为「基础名+?」，
+  是该牌或其强化版，由 GHL 按它所记的牌组判断。
 
 另附 slots：每张手牌对应的请求候选 id（可出的牌为 card_N，不可出的为 unplayable_N），GHL 据此把手牌位置对应到候选；
 
@@ -36,7 +38,7 @@ def field_value(state, key):
 
 
 def hand_names(cards):
-    """按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」。"""
+    """按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」，认出基础名而看不到强化标记的牌记为「基础名+?」。"""
     names = []
     for card in sorted(cards, key=lambda card: card["box"][0]):
         identity = card.get("identity") or {}
@@ -45,6 +47,9 @@ def hand_names(cards):
         elif identity.get("database_card_id") and identity.get("unknown_reason") == "extra_upgrade_markers":
             # 「++」：库中最高只有「+」，按库名记。
             names.append(identity["database_name"])
+        elif identity.get("database_card_id") and identity.get("status") == "base_match_variant_unresolved":
+            # 叠放的手牌只露出卡名前段（upgrade_not_visible_in_overlap），或两个识别视图的强化标记不一致。
+            names.append((identity.get("base_name") or identity["database_name"].rstrip("+")) + "+?")
         else:
             names.append("?")
     return names

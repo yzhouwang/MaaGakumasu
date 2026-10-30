@@ -332,6 +332,20 @@ class GhlFrameTest(unittest.TestCase):
         self.assertEqual(frame["slots"], ["card_0", "unplayable_0"])
         self.assertEqual(frame["unknown"], [])
 
+    def test_overlapped_cards_keep_their_base_name(self):
+        # 四五张手牌叠放：右邻的牌盖住卡名末尾的「+」，基础名认出而强化与否未定，记为「基础名+?」，由 GHL 按牌组判断。
+        def card(x, identity):
+            return {"candidate_id": f"card_{x}", "box": [x, 883, 187, 249], "identity": identity}
+
+        overlapped = {"status": "base_match_variant_unresolved", "database_card_id": "skill_card_0001", "database_name": "届いて！",
+                      "base_name": "届いて！", "unknown_reason": "upgrade_not_visible_in_overlap", "observed_plus_count": 0}
+        conflicting = {**overlapped, "database_name": "きらきら紙吹雪+", "base_name": "きらきら紙吹雪", "unknown_reason": "inconsistent_upgrade_visibility"}
+        unread = {"status": "unknown", "database_card_id": None, "unknown_reason": "shared_visible_prefix"}
+        shown = {"status": "matched", "database_card_id": "skill_card_0002", "database_name": "輝きの到達点", "observed_plus_count": 0}
+        cards = [card(142, overlapped), card(388, conflicting), card(266, unread), card(513, shown)]
+        frame = ghl_frame({"battle_state": {"hud_present": False, "fields": {}}, "cards": cards})
+        self.assertEqual(frame["hand"], ["届いて！+?", "?", "きらきら紙吹雪+?", "輝きの到達点"])
+
     def test_drinks_follow_the_candidate_slots(self):
         state = {
             "hud_present": False,
