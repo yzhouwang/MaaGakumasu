@@ -1,4 +1,4 @@
-"""战斗画面识别回归：课程 HUD、考试追加回合、体力数字筛选、同形 Buff 图标区分、控制台 HUD 文案与 GHL 实况帧整理。
+"""战斗画面识别回归：课程 HUD、考试追加回合与元气、体力数字筛选、同形 Buff 图标区分、控制台 HUD 文案与 GHL 实况帧整理。
 
 使用替身 OCR（按识别区域返回预设文字），不读取真实截图、不加载模板；需要安装 maafw（读取器模块的导入链）。
 """
@@ -25,6 +25,7 @@ from produce.state import (
     buff_overflow,
     majority_color,
     added_turns_field,
+    exam_genki_field,
     masked_correlation,
     buff_column_occluded,
 )
@@ -39,7 +40,7 @@ def token(text, box, confidence=1.0):
 
 def reader(screen):
     """screen 为 {识别区域: 文字列表}；未登记的区域没有文字。模板登记表不存在，Buff 一律不读。"""
-    return BattleStateReader(Path("missing_registry.json"), lambda array, roi: screen.get(tuple(roi), []))
+    return BattleStateReader(Path("missing_registry.json"), lambda array, roi, only_rec=False: screen.get(tuple(roi), []))
 
 
 def lesson_screen(goal_label, goal, bonus=()):
@@ -87,6 +88,36 @@ class TurnParsingTest(unittest.TestCase):
         absent = added_turns_field([], EXAM_HUD["added"])
         self.assertEqual((absent["value"], absent["status"]), (0, "not_shown"))
         self.assertIsNone(added_turns_field([token("+1", [99, 120, 53, 34]), token("+2", [99, 120, 53, 34])], EXAM_HUD["added"])["value"])
+
+    def test_exam_genki_is_the_whole_number(self):
+        # 窄框只见后两位：508 读作 8、194 读作 94、1138 读作 138；整数框读出整个数，窄框读出的须是它的末几位。
+        roi = EXAM_HUD["genki_whole"]
+
+        def genki(text, narrow, confidence=1.0):
+            seen = {"value": narrow, "confidence": 1.0 if narrow is not None else None, "roi": EXAM_HUD["genki"][0], "raw_ocr": []}
+            return exam_genki_field([token(text, roi, confidence)] if text is not None else [], roi, seen)["value"]
+
+        for text, narrow, expected in [("508", 8, 508), ("194", 94, 194), ("1138", 138, 1138), ("207", 7, 207), ("81", None, 81)]:
+            self.assertEqual(genki(text, narrow), expected)
+        # 一两位数时露出的体力条末端读成数字前的「D」或「0」，盾形右缘读成数字后的「-」；②经 NFKC 为 2。
+        for text, narrow, expected in [("D45", 45, 45), ("045", 45, 45), ("477-", 77, 477), ("D②", 2, 2)]:
+            self.assertEqual(genki(text, narrow, 0.9), expected)
+        # 置信度低的读数须与窄框相同。
+        self.assertEqual(genki("0", 0, 0.52), 0)
+        self.assertIsNone(genki("2", None, 0.53))
+        # 与窄框矛盾、读不出数字或没有读数时为未知，不退回窄框。
+        self.assertIsNone(genki("407", 9))
+        self.assertIsNone(genki("回", 0, 0.48))
+        self.assertIsNone(genki(None, 8))
+
+    def test_exam_reader_takes_genki_from_the_whole_number_box(self):
+        screen = {tuple(roi): [token("8", [690, 178, 20, 32])] for roi in EXAM_HUD["genki"]}
+        screen[tuple(EXAM_HUD["genki_whole"])] = [token("508", EXAM_HUD["genki_whole"])]
+        # 回合与体力也读得出，HUD 才算在场。
+        screen.update({tuple(roi): [token("3", [52, 72, 24, 40])] for roi in EXAM_HUD["turns"]})
+        screen[tuple(EXAM_HUD["stamina"])] = [token("26", [566, 210, 56, 39])]
+        state = reader(screen).read(IMAGE)
+        self.assertEqual((state["layout"], state["fields"]["genki"]["value"]), ("exam", 508))
 
 
 class LessonHudTest(unittest.TestCase):

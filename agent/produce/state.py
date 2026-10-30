@@ -23,11 +23,16 @@ STATE_FIELDS = (
 )
 # 考试 HUD：剩余回合环、追加回合的「+N」胶囊、体力与元气。体力区域放宽并按数字中心筛选，
 # 过窄的区域会把体力心形图标的一半与数字连读（如 7 读成 27）。
+# 元气数字压在体力条的圆形末端上：三位数以上时首位数字盖住末端，genki 的两个窄框只见后两位（508 读作 8，
+# 2026-10-30 篠澤広【光景】的实况）。元气取整数框 genki_whole 只识别不检测的整个数，窄框用来核对末几位
+# （exam_genki_field）。整数框不做文字检测：检测会在末端边缘把数字拆开或截断（194 读作「9」「4」，207 读作「20」），
+# 框再往左还会把末端读成首位数字（475 读作 2475）；一两位数时露出的末端读成数字前的「D」或「0」（D45、045）。
 EXAM_HUD = {
     "turns": ([20, 55, 80, 70], [32, 69, 60, 46]),
     "added": [95, 115, 85, 45],
     "stamina": [530, 195, 130, 64],
     "genki": ([643, 170, 72, 43], [648, 172, 67, 40]),
+    "genki_whole": [622, 172, 76, 40],
 }
 # 课程 HUD：左上「残りターン数」框（追加回合显示为「5+1」，日程结束后为「0+2」）、中央圆环
 # 「CLEARまで」或 CLEAR 后的「PERFECTまで」、CLEAR 后右上角的「レジェンドボーナス」计数；
@@ -235,6 +240,28 @@ def number_views(views):
     return {**reading, "value_views": views}
 
 
+def exam_genki_field(raw, roi, narrow):
+    """
+    考试 HUD 的元气：整数框读出的整个数，去掉前后各一个非数字（露出的体力条末端读成的「D」、盾形右缘读成的「-」）。
+    窄框读得出时须是它的末几位；置信度不足 0.70 的读数须与窄框相同。读不出时为未知，不退回窄框：窄框可能截掉了百位。
+
+    Args:
+        raw: 整数框 genki_whole 只识别不检测的 OCR 结果。
+        roi: 整数框。
+        narrow: 窄框 genki 的读数（number_views 的结果），只见后两位。
+    """
+    text = unicodedata.normalize("NFKC", raw[0]["text"]).strip() if len(raw) == 1 else ""
+    match = re.fullmatch(r"[^\d\s]?(\d{1,5})[^\d\s]?", text)
+    if not match:
+        return {**unknown_field("missing_or_ambiguous_number", roi, raw), "value_views": [narrow]}
+    value, confidence, seen = int(match[1]), raw[0]["confidence"], narrow["value"]
+    if seen is not None and value % 10 ** len(str(seen)) != seen:
+        return {**unknown_field("conflicting_number_views", roi, raw), "value_views": [narrow]}
+    if confidence < 0.70 and value != seen:
+        return {**unknown_field("missing_or_ambiguous_number", roi, raw), "value_views": [narrow]}
+    return {"value": value, "status": "observed", "confidence": confidence, "roi": roi, "raw_ocr": raw, "value_views": [narrow]}
+
+
 def overlap_ratio(left, right):
     x0, y0 = max(left[0], right[0]), max(left[1], right[1])
     x1, y1 = min(left[0] + left[2], right[0] + right[2]), min(left[1] + left[3], right[1] + right[3])
@@ -329,9 +356,10 @@ class BattleStateReader:
             self.templates = []
             self.template_error = str(exc)
 
-    def _ocr(self, array, roi, errors):
+    def _ocr(self, array, roi, errors, only_rec=False):
         try:
-            return self.read_ocr(array, roi)
+            # only_rec：只识别不检测，整个区域按一行文字识别；用到它的区域，read_ocr 须接受该参数。
+            return self.read_ocr(array, roi, only_rec=True) if only_rec else self.read_ocr(array, roi)
         except Exception as exc:
             errors.append({"roi": roi, "error": str(exc)})
             return []
@@ -660,7 +688,9 @@ class BattleStateReader:
         fields["turns_added"] = added_turns_field(self._ocr(array, roi, errors), roi)
         roi = EXAM_HUD["stamina"]
         fields["stamina"] = number_field(centered(self._ocr(array, roi, errors), STAMINA_CENTER_X), roi, maximum=999)
-        fields["genki"] = number_views([number_field(self._ocr(array, roi, errors), roi, maximum=99999) for roi in EXAM_HUD["genki"]])
+        narrow = number_views([number_field(self._ocr(array, roi, errors), roi, maximum=99999) for roi in EXAM_HUD["genki"]])
+        roi = EXAM_HUD["genki_whole"]
+        fields["genki"] = exam_genki_field(self._ocr(array, roi, errors, only_rec=True), roi, narrow)
         roi = [106, 44, 115, 81]
         raw = self._ocr(array, roi, errors)
         fields["attribute_multiplier_percent"] = number_field(raw, roi, maximum=99999, percent=True)

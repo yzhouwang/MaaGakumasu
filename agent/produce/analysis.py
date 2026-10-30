@@ -211,20 +211,21 @@ class OfflineVision:
             raise RuntimeError(f"No recognition detail: {kind}")
         return detail.nodes[0].recognition.all_results
 
-    def _read_title(self, array, roi):
+    def _read_title(self, array, roi, only_rec=False):
+        """only_rec 为真时只识别不检测：整个区域按一行文字识别。"""
         from maa.pipeline import JOCR, JRecognitionType
 
         left, top, width, height = roi
-        crop_hash = hashlib.sha256(array[top : top + height, left : left + width].tobytes()).hexdigest()
-        if crop_hash not in self._ocr_cache:
-            results = self.recognize(JRecognitionType.OCR, JOCR(roi=roi), array)
-            self._ocr_cache[crop_hash] = [
+        key = (hashlib.sha256(array[top : top + height, left : left + width].tobytes()).hexdigest(), only_rec)
+        if key not in self._ocr_cache:
+            results = self.recognize(JRecognitionType.OCR, JOCR(roi=roi, only_rec=only_rec), array)
+            self._ocr_cache[key] = [
                 {"text": item.text, "confidence": item.score, "box": [item.box[0] - left, item.box[1] - top, item.box[2], item.box[3]]}
                 for item in results
             ]
             if len(self._ocr_cache) > 2048:
                 self._ocr_cache.pop(next(iter(self._ocr_cache)))
-        return [{**item, "box": [item["box"][0] + left, item["box"][1] + top, *item["box"][2:]]} for item in self._ocr_cache[crop_hash]]
+        return [{**item, "box": [item["box"][0] + left, item["box"][1] + top, *item["box"][2:]]} for item in self._ocr_cache[key]]
 
     def match_buff_templates(self, array, definition):
         from maa.pipeline import JTemplateMatch, JRecognitionType
