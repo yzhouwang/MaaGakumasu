@@ -527,6 +527,17 @@ class GhlFirstTest(unittest.TestCase):
         answer["task"] = "ghl/battle-exam"
         self.assertEqual(ghl_choice(answer, self.battle, self.scope)[0]["choice"], "drink_0")
 
+    def test_lesson_drink_override_is_taken(self):
+        # --lesson-drinks b4v2：课程中 B4v2 用的饮料以 override 给出，不受课程饮料的限制；决策模型自选的饮料照常不采用。
+        answer = ghl("ghl/battle-lesson", {"1": 0.6, "2": 0.3}, {"1": "drink_0", "2": "card_0"})
+        answer["override"] = {"policy": "lesson-drinks-B4v2-teacher-n8", "key": "1", "live": "drink_0"}
+        choice = ghl_choice(answer, self.battle, self.scope)[0]
+        self.assertEqual(choice["choice"], "drink_0")
+        self.assertTrue(choice["reason"].startswith("GHL lesson-drinks-B4v2-teacher-n8"))
+        # 饮料不在画面上时照常取决策模型可执行的选择（课程中不取饮料）。
+        answer["optionLive"]["1"] = None
+        self.assertEqual(ghl_choice(answer, self.battle, self.scope)[0]["choice"], "card_0")
+
     def test_scope_skip_and_errors_go_to_the_llm(self):
         answer = ghl("ghl/battle-lesson", {"1": 1.0}, {"1": "card_0"})
         self.assertIsNone(ghl_choice(answer, self.battle, {"exam"})[0])

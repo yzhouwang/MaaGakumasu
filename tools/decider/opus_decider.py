@@ -11,7 +11,8 @@
 --ghl：GHL（gakumas-headless-lab）的实况桥（scripts/maa/live.ts，配合 ghl_readings.py --follow 与决策模型服务）
 把它对每个请求的选择写入信箱的 ghl/answers.jsonl。本决策者对范围内的请求先等 GHL 的选择（--ghl-wait 秒），
 采用决策模型在本请求候选中的最优项；GHL 跳过、超时或没有可执行的候选时照常问 LLM（--ghl-only 时回答 fallback）。
-课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。
+课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。GHL 的 override 不受此限：
+--lesson-drinks b4v2 时 B4v2（目标 v2 给赛前用掉的饮料定价）在课程中用的饮料以 override 给出。
 
 Agent 只等 config/decider.json 的 timeout_s 秒（--agent-timeout 可覆盖）。Agent 已放弃的请求（consumed/ 中有超时或停止的记录，
 或已超过该时间）不再作答，只记一行日志：否则决策者中断或重启后，积压的旧请求各要等 GHL、问模型，正在等待的请求也会超时。
@@ -115,8 +116,9 @@ def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider",
     GHL 对请求的选择：范围内、且有本请求的候选可执行时返回 {"choice", "reason"}，否则返回 (None, 原因)。
 
     decider 策略取决策模型在可执行候选中概率最高的一项；reference 策略取 GHL 的参照策略（战斗 B4、其余 B1v2）。
-    GHL 给出 override（如 --lessons r8 时课程周的选择）且其候选可执行时，优先采用它，不论策略。
-    课程中默认不采用饮料。职业课（class_option）的选项在 GHL 中是「上课:属性」，候选为属性。
+    GHL 给出 override（--lessons r8 时课程周的选择、--lesson-drinks b4v2 时课程中 B4v2 用的饮料）且其候选可执行时，
+    优先采用它，不论策略。课程中默认不采用决策模型选的饮料，override 不受此限。职业课（class_option）的选项在 GHL 中
+    是「上课:属性」，候选为属性。
     """
     task = answer.get("task")
     if answer.get("skip"):
@@ -138,7 +140,7 @@ def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider",
     override = answer.get("override") or {}
     if override.get("key"):
         live = live_of(override["key"])
-        if allowed(live):
+        if live in ids:
             return {"choice": live, "reason": f"GHL {override.get('policy')}: {texts.get(override['key'], '')}"[:300]}, None
     if policy == "reference":
         ref = answer.get("ref") or {}
