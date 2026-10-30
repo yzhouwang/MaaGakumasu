@@ -1204,6 +1204,60 @@
 				"radius": 33
 			},
 			"template_sha256": "9f23652f01459a118c708bd0737d016281fe8afe56be233929f84c6bff0b2aa1"
+		},
+		{
+			"id": "drink_0011",
+			"drink_id": 11,
+			"name": "フレッシュビネガー",
+			"template": "produce/drinks/drink_0011.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-30-ghl",
+				"frame_sha256": "da22df4748555685d3e267913fdc93b2d988db2d93340185aa26b7dd07ee77ed",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-30",
+				"verification": {
+					"method": "reward_pick_and_elimination_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring, an orange drink in a glass with a straw) at drink slot 1 of the week-4 lesson's first frame (request 20261030-020021-00012). The drink was the pick of the week-3 活動支給 reward (request 00009): the reward reader's OCR names its three drinks おしゃれハーブティー, フレッシュビネガー and 特製ハツボシエキス, the answer took reward_2, and the reward screen's middle icon is this one. Slot 0 reads 初星ホエイプロテイン by its template. GHL's ledger fills this slot with フレッシュビネガー in all 7 battles of the run, the final's slot 0 included (its unread drink of the 2026-10-30 final).",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "15b0e8fced311ae56b3b0a1d905bad84b6f7ffe1a9e0681cd3cd6adfd2f95ba2"
+		},
+		{
+			"id": "drink_0001",
+			"drink_id": 1,
+			"name": "初星水",
+			"template": "produce/drinks/drink_0001.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-10-29-2120-ghl",
+				"frame_sha256": "431b95222c40edd4290f2aad5769e63d55166c221b7bce85fb1aa073bc8d17ea",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-10-29",
+				"verification": {
+					"method": "drink_keep_effect_and_elimination_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring, a clear water bottle) at drink slot 1 of the week-14 lesson's first frame of the 2026-10-29 21:20 run (request 20261029-212050-00090). Slots 0 and 2 read 烏龍茶 and リカバリドリンク by their templates. The drink-keep dialog after that lesson (request 00099) lists the drinks held with their effects and icons: 元気+7 (烏龍茶), パラメータ+10 with this icon (初星水: score+=10), 体力回復6 (リカバリドリンク); the answers (00099-00101) unchecked it to keep ホットコーヒー.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "17160d5127174f98324209fa0fde244267aadb810a91b727b89786398d84e422"
 		}
 	]
 }
