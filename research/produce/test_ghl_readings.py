@@ -15,7 +15,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
 from produce.state import BattleStateReader
-from ghl_frame import LESSON_ICON, lesson_attribute
+from ghl_frame import LESSON_ICON, assist_badge, hand_names, lesson_attribute, mark_assists
 from ghl_readings import (
     OPTION_LEFT,
     P_SPENT_ROI,
@@ -119,6 +119,54 @@ class OfferNameTest(unittest.TestCase):
         self.assertEqual(offer_name({"status": "matched", "item_kind": "drink", "database_name": "初星ホエイプロテイン"}), ("初星ホエイプロテイン", "drink"))
         self.assertEqual(offer_name({"status": "unknown"}), (None, None))
         self.assertEqual(offer_name({}), (None, None))
+
+
+class AssistBadgeTest(unittest.TestCase):
+    BOX = [483, 884, 187, 249]
+
+    def frame(self, boxes=None):
+        array = np.full((1280, 720, 3), 200, dtype=np.uint8)
+        for x, y, _, _ in boxes or []:
+            array[y + 52 : y + 54, x + 132 : x + 186] = (100, 82, 255)
+            array[y + 52 : y + 104, x + 133 : x + 135] = (100, 82, 255)
+        return array
+
+    def test_the_frame_of_the_support_portrait(self):
+        self.assertIs(assist_badge(self.frame([self.BOX]), self.BOX), True)
+        self.assertIs(assist_badge(self.frame(), self.BOX), False)
+
+    def test_red_on_a_card_that_is_no_straight_frame(self):
+        array = self.frame()
+        x, y = self.BOX[:2]
+        array[y + 50 : y + 56, x + 142 : x + 150] = (100, 82, 255)
+        array[y + 70 : y + 76, x + 130 : x + 139] = (100, 82, 255)
+        self.assertIs(assist_badge(array, self.BOX), False)
+
+    def test_other_reds_are_not_the_frame(self):
+        array = self.frame([self.BOX])
+        array[array[..., 2] == 255] = (60, 60, 255)
+        self.assertIs(assist_badge(array, self.BOX), False)
+
+    def test_a_card_covered_by_its_neighbour(self):
+        # 四张手牌：露出 164 宽，角标的左边和上边大半可见；五张手牌：露出约 125 宽，看不到。
+        self.assertIs(assist_badge(self.frame([self.BOX]), self.BOX, 164), True)
+        self.assertIsNone(assist_badge(self.frame([self.BOX]), self.BOX, 125))
+
+    def test_mark_assists_reads_each_card_by_what_its_right_neighbour_leaves(self):
+        left, right = [19, 884, 188, 249], [144, 884, 188, 249]
+        cards = [{"box": right}, {"box": left}]
+        mark_assists(self.frame([right]), cards)
+        self.assertIs(cards[0]["assist"], True)
+        self.assertIsNone(cards[1]["assist"])
+
+    def test_hand_names(self):
+        matched = lambda name, assist=None: {"box": [len(name), 0, 10, 10], "assist": assist, "identity": {"database_card_id": "x", "status": "matched", "database_name": name, "base_name": name.rstrip("+"), "observed_plus_count": name.count("+")}}
+        self.assertEqual(hand_names([matched("届いて！+", True)]), ["届いて！+!"])
+        self.assertEqual(hand_names([matched("届いて！+", False)]), ["届いて！+"])
+        self.assertEqual(hand_names([matched("届いて！", True)]), ["届いて！"])
+        # 「++」：本来就强化过的牌再加角标，牌组里就是强化版。
+        twice = {"box": [0, 0, 10, 10], "assist": True, "identity": {"database_card_id": "x", "status": "base_match_variant_unresolved", "unknown_reason": "extra_upgrade_markers", "database_name": "届いて！+"}}
+        self.assertEqual(hand_names([twice]), ["届いて！+"])
 
 
 class LessonAttributeTest(unittest.TestCase):

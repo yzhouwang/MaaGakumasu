@@ -9,6 +9,7 @@ GHL 的影子回放与决策模型按 LiveFrame 读取战斗状态（src/bridge/
 - hand：手牌名（从左到右，「+」为强化，读不出为「?」）。战斗中再次强化的「+」牌显示「++」，GHL 没有这种牌，记为「+」。
   四五张手牌叠放时，右邻的牌盖住卡名末尾与卡面右缘的「+」：认出基础名而看不到强化标记的牌记为「基础名+?」，
   是该牌或其强化版，由 GHL 按它所记的牌组判断。
+  スキルカードサポート（支援卡头像加红「+」的角标）只在本场战斗中强化手牌：牌组里的牌仍是基础版，显示「X+」时记为「X+!」。
 
 另附 slots：每张手牌对应的请求候选 id（可出的牌为 card_N，不可出的为 unplayable_N），GHL 据此把手牌位置对应到候选；
 
@@ -29,6 +30,15 @@ LESSON_ICON = (520, 48, 24, 24)
 # 课程圆环上方：SP 课程有「SP」标记（OCR 多读作「LS?」「L+S」）。
 LESSON_SP_ROI = [320, 30, 90, 45]
 
+# スキルカードサポート的角标：卡面右侧的支援卡头像，外框是红到橙的渐变（RGB 255, 57~107, 109~91）。按 720 宽画面、以卡牌框左上角为
+# 原点，上边在 y 50~53、左边在 x 132~135。只查这两条边的连续色线：花束等卡面的红色连不成直线。九局实况 2,577 张牌里，
+# 两条边的连续率只有 0（2,274 张）或 0.81 以上（303 张）。
+ASSIST_TOP = (49, 56, 141, 178)
+ASSIST_LEFT = (58, 96, 130, 138)
+ASSIST_MIN_LINE = 0.7
+# 右邻的牌盖住这条线以内时看不到角标（五张手牌），不作判断。
+ASSIST_MIN_VISIBLE = 150
+
 # 与 GHL 引擎字段同名的 Buff，数值即层数或回合。
 GHL_BUFFS = ("goodImpressionTurns", "motivation", "halfCostTurns", "doubleCostTurns", "nullifyDebuff")
 
@@ -37,13 +47,49 @@ def field_value(state, key):
     return ((state.get("fields") or {}).get(key) or {}).get("value")
 
 
+def assist_badge(array, box, visible_width=None):
+    """
+    手牌右上方有没有スキルカードサポート的角标（array 为 BGR 画面）。
+
+    Args:
+        array: 720 宽的 BGR 画面。
+        box: 卡牌框 [x, y, 宽, 高]。
+        visible_width: 没被右邻的牌盖住的宽度；不给时按整张牌。
+
+    Returns:
+        bool | None: 看不到角标所在的位置时为 None。
+    """
+    x, y, width, _ = box
+    visible = width if visible_width is None else min(width, visible_width)
+    if visible < ASSIST_MIN_VISIBLE:
+        return None
+    blue, green, red = (array[..., k] for k in range(3))
+    match = (red >= 245) & (green >= 50) & (green <= 115) & (blue >= 85) & (blue <= 115)
+    top0, top1, col0, col1 = ASSIST_TOP
+    col1 = min(col1, visible)
+    top = match[y + top0 : y + top1, x + col0 : x + col1].any(axis=0)
+    row0, row1, left0, left1 = ASSIST_LEFT
+    left = match[y + row0 : y + row1, x + left0 : x + left1].any(axis=1)
+    return bool(top.size and left.size and top.mean() >= ASSIST_MIN_LINE and left.mean() >= ASSIST_MIN_LINE)
+
+
+def mark_assists(array, cards):
+    """给每张牌记上 assist：スキルカードサポート的角标（True / False；被右邻盖住时为 None）。"""
+    ordered = sorted(cards, key=lambda card: card["box"][0])
+    for index, card in enumerate(ordered):
+        following = ordered[index + 1]["box"][0] - card["box"][0] if index + 1 < len(ordered) else None
+        card["assist"] = assist_badge(array, card["box"], following)
+
+
 def hand_names(cards):
-    """按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」，认出基础名而看不到强化标记的牌记为「基础名+?」。"""
+    """按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」，认出基础名而看不到强化标记的牌记为「基础名+?」，只在本场强化的牌记为「X+!」。"""
     names = []
     for card in sorted(cards, key=lambda card: card["box"][0]):
         identity = card.get("identity") or {}
         if identity.get("database_card_id") and identity.get("status") == "matched":
-            names.append(card_name(identity))
+            name = card_name(identity)
+            # 角标加一个「+」的牌，牌组里是基础版；本来就强化过的牌显示「++」，走下面的 extra_upgrade_markers。
+            names.append(name + "!" if card.get("assist") and name.endswith("+") else name)
         elif identity.get("database_card_id") and identity.get("unknown_reason") == "extra_upgrade_markers":
             # 「++」：库中最高只有「+」，按库名记。
             names.append(identity["database_name"])
@@ -99,6 +145,7 @@ def read_battle_request(vision, catalog, image, request):
         for index, box in enumerate((request.get("state") or {}).get("unplayable_card_boxes") or [])
     ]
     result = vision.analyze(image, catalog, candidates)
+    mark_assists(normalized_image(image), result.get("cards") or [])
     frame = ghl_frame(result, [item["box"] for item in request["candidates"] if item["id"].startswith("drink_")])
     if frame["layout"] == "lesson":
         array = normalized_image(image)
