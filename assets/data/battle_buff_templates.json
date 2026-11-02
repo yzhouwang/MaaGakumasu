@@ -1258,6 +1258,85 @@
 				"radius": 33
 			},
 			"template_sha256": "17160d5127174f98324209fa0fde244267aadb810a91b727b89786398d84e422"
+		},
+		{
+			"id": "drink_0016",
+			"drink_id": 16,
+			"name": "おしゃれハーブティー",
+			"template": "produce/drinks/drink_0016.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-01-2007-ghl",
+				"frame_sha256": "134dd8d723155bd4de828f307d6f29cd41d7e162fdf1cd7ca648df2b1630564a",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-01",
+				"verification": {
+					"method": "drink_keep_effect_and_elimination_cross_check",
+					"evidence": "Drink slot icon (pixel art inside the rarity ring, a yellow-green herbal tea in a white cup on a saucer) at drink slot 0 of the final's first frame of the 2026-11-01 20:07 run (request 20261101-200753-00181). Slots 1 and 2 read 厳選初星ティー and フレッシュビネガー by their templates. The drink-keep dialog of that run (request 00108) lists the drinks held with their effects and icons: 好印象の100%分パラメータ上昇, 元気+3 with this icon (おしゃれハーブティー: score+=goodImpressionTurns; genki+=3), as does the 2026-11-01 02:16 run's (request 00096).",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "e7aed97065be1aaf739f9661e65cfc944507628e0974cd0329285d70b13adcdc"
+		}
+	],
+	"items": [
+		{
+			"id": "item_0082",
+			"item_id": 82,
+			"name": "天川ラーメン巡り",
+			"template": "produce/items/item_0082.png",
+			"threshold": 0.92,
+			"method": 10001,
+			"roi": [600, 280, 120, 460],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-01-2007-ghl",
+				"frames": ["bf9f2371aedce0d1bbb28f4db16b671e1814f1940e230cf26a7ca6ad43c70f5e", "5a49c4d2a17466f5bb67b8545f42bdc99adf0775931c33a68999d4911e469d49", "d49d1e6c11d6a58804464090b9211d270ec6107e5100d731e268b32081061f54", "ddb1d1b0210cd360b7630f8578a94ee97ee2d3f1bd949e10f522c6a7c14e3fc0"],
+				"box": [633, 318, 50, 54],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-01",
+				"verification": {
+					"method": "recording_popup_and_master_data",
+					"evidence": "The ramen guide (天川ラーメン巡り on its cover) in the P-item column of the week screens of the 2026-11-01 20:07 run (requests 00006, 00010, 00113, 00130). Master data: pitem_00-3-010-0, the first event of s_card-3-0001."
+				}
+			},
+			"mask": {
+				"shape": "agreement",
+				"tolerance": 12
+			},
+			"template_sha256": "3ce8a78563ef440c8bf4aa492d64a650408bc9699453a28c619ba78972d70bf4"
+		},
+		{
+			"id": "item_0072",
+			"item_id": 72,
+			"name": "星のリトルプリンス",
+			"template": "produce/items/item_0072.png",
+			"threshold": 0.92,
+			"method": 10001,
+			"roi": [600, 280, 120, 460],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-01-2007-ghl",
+				"frames": ["bf9f2371aedce0d1bbb28f4db16b671e1814f1940e230cf26a7ca6ad43c70f5e", "5a49c4d2a17466f5bb67b8545f42bdc99adf0775931c33a68999d4911e469d49", "d49d1e6c11d6a58804464090b9211d270ec6107e5100d731e268b32081061f54", "ddb1d1b0210cd360b7630f8578a94ee97ee2d3f1bd949e10f522c6a7c14e3fc0"],
+				"box": [630, 379, 56, 50],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-01",
+				"verification": {
+					"method": "recording_popup_and_master_data",
+					"evidence": "The star on a paper chain in the same column and frames. The recording shows it granted at 75.8 s with the name 星のリトルプリンス (【ビジュアルレッスン・ビジュアルターンのみ】ターン開始時、固定元気+2). Master data: pitem_00-3-011-0, the first event of s_card-3-0007."
+				}
+			},
+			"mask": {
+				"shape": "agreement",
+				"tolerance": 12
+			},
+			"template_sha256": "2c5b2b9b48007674673d6055baa4b664697c5ed07d56b65f145c93cc9f6165e6"
 		}
 	]
 }

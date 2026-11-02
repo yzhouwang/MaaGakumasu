@@ -360,13 +360,13 @@ def customize_reading(vision, catalog, mailbox, request):
 
 
 def week_reading(vision, mailbox, request):
-    """行动选择画面：周数与三维成长加成（Vo、Da、Vi），以及请求中已读取的体力、P 点数与三维。"""
+    """行动选择画面：周数与三维成长加成（Vo、Da、Vi），右侧栏中已登记的 P 道具，以及请求中已读取的体力、P 点数与三维。"""
     from utils.image_io import read_image
     from produce.analysis import normalized_image
 
     array = normalized_image(read_image(mailbox / request["frame"]))
     fields = week_fields(texts(vision, array, WEEK_COUNTER_ROI), texts(vision, array, WEEK_BONUS_ROI))
-    return dict(fields, resources=request.get("state") or {})
+    return dict(fields, resources=request.get("state") or {}, items=vision.state_reader.held_items(array))
 
 
 class Reader:

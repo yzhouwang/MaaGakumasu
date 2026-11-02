@@ -5,6 +5,7 @@
 """
 
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(ROOT / "tools" / "decider")]
+from produce.state import BattleStateReader
 from ghl_frame import LESSON_ICON, lesson_attribute
 from ghl_readings import (
     OPTION_LEFT,
@@ -44,6 +46,24 @@ from ghl_readings import (
     customize_fields,
     customize_reading,
 )
+
+
+class HeldItemsTest(unittest.TestCase):
+    def registry(self, folder, names):
+        path = Path(folder) / "registry.json"
+        path.write_text(json.dumps({"items": [{"id": name, "name": name, "template": f"{name}.png", "threshold": 0.92, "method": 10001, "roi": [600, 280, 120, 460], "green_mask": True} for name in names]}), encoding="utf-8")
+        return path
+
+    def test_items_read_top_to_bottom_above_their_threshold(self):
+        hits = {"star": [{"score": 0.95, "box": [630, 440, 56, 50]}], "ramen": [{"score": 0.99, "box": [633, 318, 50, 54]}], "other": [{"score": 0.91, "box": [633, 380, 50, 54]}]}
+        with tempfile.TemporaryDirectory() as folder:
+            reader = BattleStateReader(self.registry(folder, list(hits)), None, lambda array, entry: hits[entry["name"]])
+            self.assertEqual(reader.held_items(None), ["ramen", "star"])
+
+    def test_no_item_in_the_column(self):
+        with tempfile.TemporaryDirectory() as folder:
+            reader = BattleStateReader(self.registry(folder, ["ramen"]), None, lambda array, entry: [])
+            self.assertEqual(reader.held_items(None), [])
 
 
 def token(text, box, confidence=1.0):

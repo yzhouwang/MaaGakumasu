@@ -324,7 +324,7 @@ class BattleStateReader:
             problems = []
             entries = [
                 (kind, entry)
-                for group, kind in (("buffs", "buff"), ("stances", "stance"), ("stance_previews", "stance_preview"), ("drinks", "drink"))
+                for group, kind in (("buffs", "buff"), ("stances", "stance"), ("stance_previews", "stance_preview"), ("drinks", "drink"), ("items", "item"))
                 for entry in data.get(group, [])
             ]
             for kind, definition in entries:
@@ -572,6 +572,12 @@ class BattleStateReader:
                 continue
             drinks.append({"box": best["box"], "drink_id": entry["drink_id"], "name": entry["name"], "status": "observed", "icon_evidence": evidence})
         return drinks
+
+    def held_items(self, array):
+        """行动选择画面右侧 P 道具栏中已登记图标的 P 道具名，从上到下。栏内只显示前四个，其余折叠；没有登记模板的不在结果中。"""
+        errors = []
+        groups = self._matches(array, "item", errors)
+        return [group[0]["definition"]["name"] for group in groups if group[0]["score"] >= group[0]["definition"]["threshold"]]
 
     def _single_icon(self, array, kind, errors):
         groups = self._matches(array, kind, errors)
