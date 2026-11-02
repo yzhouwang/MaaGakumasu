@@ -60,6 +60,15 @@ class HeldItemsTest(unittest.TestCase):
             reader = BattleStateReader(self.registry(folder, list(hits)), None, lambda array, entry: hits[entry["name"]])
             self.assertEqual(reader.held_items(None), ["ramen", "star"])
 
+    def test_drinks_read_left_to_right_leaving_out_the_ambiguous(self):
+        path = Path(tempfile.mkdtemp()) / "registry.json"
+        names = {"tea": 1, "soda": 2, "water": 3}
+        path.write_text(json.dumps({"drinks": [{"id": n, "drink_id": i, "name": n, "template": f"{n}.png", "threshold": 0.97, "method": 10001, "roi": [10, 1150, 280, 100], "green_mask": True} for n, i in names.items()]}), encoding="utf-8")
+        hits = {"tea": [{"score": 0.99, "box": [112, 1165, 70, 70]}], "soda": [{"score": 1.0, "box": [26, 1165, 70, 70]}], "water": [{"score": 0.98, "box": [112, 1165, 70, 70]}]}
+        reader = BattleStateReader(path, None, lambda array, entry: hits[entry["name"]])
+        # The two at x=112 are too close to tell apart.
+        self.assertEqual(reader.held_drinks(None), ["soda"])
+
     def test_no_item_in_the_column(self):
         with tempfile.TemporaryDirectory() as folder:
             reader = BattleStateReader(self.registry(folder, ["ramen"]), None, lambda array, entry: [])

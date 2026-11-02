@@ -573,6 +573,10 @@ class BattleStateReader:
             drinks.append({"box": best["box"], "drink_id": entry["drink_id"], "name": entry["name"], "status": "observed", "icon_evidence": evidence})
         return drinks
 
+    def held_drinks(self, array):
+        """左下角饮料槽中已登记图标、且没有歧义的饮料名，从左到右。行动选择画面也可用；烏龍茶在该画面常低于阈值，所以结果只说明持有，不说明没有。"""
+        return [drink["name"] for drink in self._drinks(array, []) if drink["name"]]
+
     def held_items(self, array):
         """行动选择画面右侧 P 道具栏中已登记图标的 P 道具名，从上到下。栏内只显示前四个，其余折叠；没有登记模板的不在结果中。"""
         errors = []
