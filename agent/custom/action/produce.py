@@ -1,6 +1,7 @@
 """MaaFramework 培育动作入口及奖励领取适配。"""
 
 import time
+import unicodedata
 
 import numpy as np
 from utils import logger
@@ -9,7 +10,14 @@ from produce.events import ProduceChooseEventAuto, ProduceChooseEventBase, Produ
 from produce.console import policy_name
 from produce.decider import ExternalDecider, run_interactive
 from produce.options import ProduceKeepDrinkAuto, ProduceChooseWorkAuto, ProduceChooseMirrorAuto, ProduceChooseOptionsAuto
-from produce.rewards import RewardPreview, reward_layout
+from produce.rewards import (
+    OFFER_CHANGE_ROI,
+    RewardPreview,
+    reward_layout,
+    button_enabled,
+    offer_icons_changed,
+    offer_change_buttons,
+)
 from produce.sessions import SESSIONS
 from maa.custom_action import CustomAction
 from maa.agent.agent_server import AgentServer
@@ -373,7 +381,8 @@ class ProduceRewardExternalReady(CustomRecognition):
 @AgentServer.custom_action("ProduceChooseRewardExternal")
 class ProduceChooseRewardExternal(CustomAction):
     """
-    逐个点选奖励候选并截取详情画面，连同可用的「不领取」交给外部决策者，按答复选择后领取。
+    逐个点选奖励候选并截取详情画面，连同可用的「不领取」、技能卡的「再抽選」与「カード除去」交给外部决策者，按答复选择后领取，
+    或重抽、除去后交回主循环（主循环重新识别奖励画面，就新的候选再次询问）。
 
     点选只改变选中项，不会领取；没有有效答复时禁用本节点重新执行原有选择流程。
     """
@@ -382,6 +391,13 @@ class ProduceChooseRewardExternal(CustomAction):
     SETTLE_TIMEOUT = 3.0
     # 奖励详情面板（白底）区域；领取后的淡出画面与离开后的画面在此明显变暗
     PANEL_ROI = (80, 490, 560, 280)
+    # 重抽、除去后等新候选的时限与截图间隔：候选图标连续两次截图都与之前不同（除去为该卡的位置）才算生效
+    CHANGE_TIMEOUT = 12.0
+    CHANGE_POLL = 0.4
+    # 确认对话框左下的「キャンセル」（模板同特别指导；奖励画面上得分约 0.19）；确认按钮与之左右对称（相谈的「交換確認」同此）
+    DIALOG_CANCEL = {"recognition": "TemplateMatch", "roi": [40, 1000, 400, 270], "template": "cancel.png", "threshold": 0.9}
+    # 上一次重抽或除去未确认生效时，下一次询问不提供这两个候选，避免在同一画面上反复重试
+    _no_changes_next = False
 
     def run(self, context, argv):
         decider = ExternalDecider.load()
@@ -390,6 +406,7 @@ class ProduceChooseRewardExternal(CustomAction):
         image, offers = self._settled_offers(context)
         if offers is None:
             return self.fallback(context)
+        image = image.copy()
         if len(offers) < 2:
             # 领取后的淡出画面仍能定位到候选框，画面离开后不再点击，交回主循环重新识别
             logger.info("奖励画面已离开，不再选择")
@@ -422,6 +439,8 @@ class ProduceChooseRewardExternal(CustomAction):
             rx, ry, rw, rh = recommended.best_result.box
             point = (rx + rw // 2, ry + rh // 2 - 80)
             fallback = next((c["id"] for c in candidates if c["box"][0] <= point[0] <= c["box"][0] + c["box"][2]), fallback)
+        if not (skip and skip.hit):
+            candidates += self._offer_changes(context, previews[f"offer{len(offers)}"], offers)
         chosen = decider.ask(
             "reward", image, candidates, fallback=fallback, extra_images=previews,
             state={"game_recommended": bool(recommended and recommended.hit)}, stopping=lambda: context.tasker.stopping,
@@ -430,6 +449,8 @@ class ProduceChooseRewardExternal(CustomAction):
             return False
         if not chosen:
             return self.fallback(context)
+        if chosen["id"] == "reroll" or chosen["id"].startswith("remove_"):
+            return self._change_offer(context, decider, chosen, offers, image)
         if chosen["id"] != "skip" and skip and skip.hit and self._drinks_full(context, previews[f"offer{len(offers)}"]):
             logger.info("P 饮料已达持有上限，改为不领取")
             chosen = candidates[-1]
@@ -441,6 +462,120 @@ class ProduceChooseRewardExternal(CustomAction):
         time.sleep(self.PREVIEW_DELAY)
         context.run_task("ProduceChooseConfirm")
         return True
+
+    def _offer_changes(self, context, image, offers):
+        """
+        技能卡奖励的「再抽選」与「カード除去」候选，image 为选中了一张候选的预览画面。读不到剩余次数、次数为 0、
+        再抽選按钮不可用，或上一次重抽、除去未确认生效时不给；カード除去要先选中所除的卡，按钮是否可用在点击时核对。
+        """
+        if ProduceChooseRewardExternal._no_changes_next:
+            ProduceChooseRewardExternal._no_changes_next = False
+            logger.info("上一次重抽或除去未确认生效，本次不提供再抽選与カード除去")
+            return []
+        buttons = offer_change_buttons(self._ocr(context, image, OFFER_CHANGE_ROI))
+        changes = []
+        reroll = buttons.get("reroll")
+        if reroll and reroll["left"] > 0 and button_enabled(image, reroll["box"]):
+            changes.append({"id": "reroll", "label": f"再抽選：重抽这组候选（剩余 {reroll['left']} 次）", "box": reroll["box"], "left": reroll["left"]})
+        remove = buttons.get("remove")
+        if remove and remove["left"] > 0:
+            changes += [
+                {
+                    "id": f"remove_{index + 1}", "label": f"カード除去：本次培育中除去第 {index + 1} 个奖励，并补抽它的位置（剩余 {remove['left']} 次）",
+                    "box": remove["box"], "card_box": offer["box"], "left": remove["left"],
+                }
+                for index, offer in enumerate(offers)
+            ]
+        return changes
+
+    def _change_offer(self, context, decider, chosen, offers, before):
+        """
+        按答复重抽（再抽選）或除去一张候选（カード除去，先选中该卡），遇到确认对话框点其右侧的确认按钮，等奖励画面换上新的候选后
+        交回主循环。候选图标连续两次截图都与之前不同（除去为该卡的位置）才算生效：剩余次数可能先于新候选变化，只记入经过。
+        经过的各画面存入信箱（decider.record_change）。未确认生效时下一次询问不提供这两个候选。
+
+        Returns:
+            bool: 任务停止时返回 False，其余情况返回 True。
+        """
+        controller = context.tasker.controller
+        key = "reroll" if chosen["id"] == "reroll" else "remove"
+        index = None if key == "reroll" else int(chosen["id"].removeprefix("remove_")) - 1
+        boxes = [offer["box"] for offer in offers]
+        started = time.time()
+        record = {"choice": chosen["id"], "left_before": chosen["left"], "steps": []}
+        frames = []
+
+        def shot(note):
+            image = controller.post_screencap().wait().get().copy()
+            frames.append((note, image))
+            return image
+
+        def tap(box, note):
+            x, y, w, h = box
+            controller.post_click(x + w // 2, y + h // 2).wait()
+            record["steps"].append({"tap": [x + w // 2, y + h // 2], "what": note, "t": round(time.time() - started, 2)})
+
+        def finish(outcome, success):
+            record["outcome"] = outcome
+            record["seconds"] = round(time.time() - started, 2)
+            decider.record_change(chosen.get("request_id"), record, frames)
+            if success:
+                logger.info(f"奖励{'再抽選' if key == 'reroll' else 'カード除去'}已生效：{outcome}")
+            else:
+                logger.warning(f"奖励{'再抽選' if key == 'reroll' else 'カード除去'}未确认生效：{outcome}；下一次询问不提供这两个候选")
+                ProduceChooseRewardExternal._no_changes_next = True
+            return True
+
+        if key == "remove":
+            tap(chosen["card_box"], "select the card to remove")
+            time.sleep(self.PREVIEW_DELAY)
+            if not button_enabled(shot("selected"), chosen["box"]):
+                return finish("カード除去 not enabled with the card selected", False)
+        tap(chosen["box"], key)
+        confirms = 0
+        last = None
+        deadline = time.time() + self.CHANGE_TIMEOUT
+        while time.time() < deadline:
+            if context.tasker.stopping:
+                return False
+            time.sleep(self.CHANGE_POLL)
+            image = shot("after")
+            cancel = self._dialog_cancel(context, image)
+            if cancel:
+                if confirms >= 2:
+                    return finish("a dialog still shows after two confirms", False)
+                x, y, w, h = cancel
+                tap([720 - x - w, y, w, h], "confirm the dialog")
+                confirms += 1
+                last = None
+                continue
+            layout = reward_layout(image)["candidates"]
+            if len(layout) < 2 or not self._panel_bright(image):
+                last = None
+                continue
+            changed = list(range(len(layout))) if len(layout) != len(boxes) else offer_icons_changed(before, image, boxes)
+            button = offer_change_buttons(self._ocr(context, image, OFFER_CHANGE_ROI)).get(key)
+            used = button is not None and button["left"] < chosen["left"]
+            state = (tuple(changed), used)
+            if (bool(changed) if index is None else index in changed) and state == last:
+                return finish(f"offer slots changed {[i + 1 for i in changed]}, {'the count fell' if used else 'the count not read lower'}", True)
+            last = state
+        return finish(f"the offer did not change within {self.CHANGE_TIMEOUT:.0f} s", False)
+
+    def _dialog_cancel(self, context, image):
+        """左下为「キャンセル」的确认对话框打开时返回该按钮的框，否则返回 None。"""
+        detail = context.run_recognition("ProduceRewardChangeDialog", image, pipeline_override={"ProduceRewardChangeDialog": self.DIALOG_CANCEL})
+        return [int(v) for v in detail.box] if detail and detail.hit else None
+
+    @staticmethod
+    def _ocr(context, image, roi):
+        detail = context.run_recognition(
+            "ProduceRewardChangeText", image, pipeline_override={"ProduceRewardChangeText": {"recognition": "OCR", "roi": roi}}
+        )
+        return [
+            {"text": unicodedata.normalize("NFKC", item.text).strip(), "box": [int(v) for v in item.box], "confidence": float(item.score)}
+            for item in (detail.all_results if detail else [])
+        ]
 
     @classmethod
     def _panel_bright(cls, image) -> bool:

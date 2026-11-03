@@ -245,6 +245,53 @@ def detail_difference(left, right):
     return float(np.abs(a[487:778, 90:640].astype(np.int16) - b[487:778, 90:640].astype(np.int16)).mean())
 
 
+# 技能卡奖励画面底部：左为「カード除去」（选中一张候选后才可用：本次培育中不再出现该卡，并补抽它的位置），右为「再抽選」
+# （重抽整组候选）；按钮文字正上方是剩余次数「あと N回」。用完后按钮的样子未见过，读不到次数或按钮发灰时不作候选。
+OFFER_CHANGE_ROI = [0, 1030, 720, 100]
+OFFER_CHANGE_BUTTONS = (("再抽選", "reroll"), ("カード除去", "remove"))
+
+
+def offer_change_buttons(tokens):
+    """
+    奖励画面底部的 OCR 结果 → {"reroll" 或 "remove": {"box": 按钮文字的框, "left": 剩余次数}}；
+    只收按钮文字与其正上方的剩余次数都读到的按钮。
+    """
+    counters = []
+    for item in tokens:
+        match = re.fullmatch(r"あと(\d+)回", item["text"])
+        if match and item["confidence"] >= 0.7:
+            counters.append((item["box"][0] + item["box"][2] / 2, item["box"][1], int(match.group(1))))
+    buttons = {}
+    for word, key in OFFER_CHANGE_BUTTONS:
+        button = next((item for item in tokens if word in item["text"] and item["confidence"] >= 0.7), None)
+        if not button:
+            continue
+        x, y, w, h = button["box"]
+        left = [n for cx, cy, n in counters if abs(cx - (x + w / 2)) <= 80 and cy < y]
+        if left:
+            buttons[key] = {"box": [int(v) for v in button["box"]], "left": left[0]}
+    return buttons
+
+
+def button_enabled(image, box):
+    """按钮文字左侧的按钮底色：可用时为白；不可用时发灰（未选中候选时的「カード除去」约为 187）。"""
+    array = rgb_image(image)
+    x, y, w, h = box
+    strip = array[max(0, y - 8):y + h + 8, max(0, x - 16):max(1, x - 4)] if array is not None else None
+    return strip is not None and strip.size > 0 and float(np.median(strip.max(axis=2))) >= 240
+
+
+def offer_icons_changed(before, after, boxes):
+    """同一组候选位置上图标内部（不含选中括号）变了的位置，阈值同 verify_reward_layout；选中项改变不影响图标内部。"""
+    a, b = rgb_image(before), rgb_image(after)
+    changed = []
+    for index, (x, y, w, h) in enumerate(boxes):
+        delta = np.abs(a[y + 18:y + h - 18, x + 18:x + w - 18].astype(np.int16) - b[y + 18:y + h - 18, x + 18:x + w - 18].astype(np.int16))
+        if float(delta.mean()) > 3 or float((delta.max(axis=2) > 24).mean()) > .03:
+            changed.append(index)
+    return changed
+
+
 class RewardPreview:
     """动作入口提供输入适配；OCR 在后台独立处理已保存的画面。"""
 

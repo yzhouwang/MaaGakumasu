@@ -10,6 +10,7 @@
 - responses/<id>.json：决策者的答复 {"id": ..., "choice": <候选 id>, "reason": ...}；
 - consumed/<id>.json：Agent 实际采用的结果 {"id", "choice": <采用的候选 id，回退原有逻辑时为 null>, "source": decider/invalid/timeout/stopped, "at"}。
   答复可能在超时之后才到，或不在候选中；只读信箱的旁观者（例如 GHL 的实况桥）据此还原实际执行的操作。
+- changes/<id>.json：奖励选了重抽（reroll）或除去（remove_<n>）时的经过（点击、画面 frames/<id>-change-<序号>.png、是否生效）。
 
 决策者只返回候选 id，点击仍由 Agent 按候选框执行；答复不在候选中时视为无效并回退。
 """
@@ -17,6 +18,7 @@
 import os
 import json
 import time
+import hashlib
 import itertools
 from pathlib import Path
 
@@ -130,7 +132,7 @@ class ExternalDecider:
                     return None
                 logger.success(f"外部决策：{kind} 选择 {chosen['id']}（{chosen.get('label', '')}）{response.get('reason', '')[:80]}")
                 self._consumed(request_id, chosen["id"], "decider")
-                result = {**chosen, "reason": response.get("reason", "")}
+                result = {**chosen, "reason": response.get("reason", ""), "request_id": request_id}
                 if isinstance(response.get("x"), int) and isinstance(response.get("y"), int):
                     result["point"] = [response["x"], response["y"]]
                 return result
@@ -138,6 +140,28 @@ class ExternalDecider:
         logger.warning(f"外部决策超时（{self.timeout:.0f} 秒），使用原有逻辑")
         self._consumed(request_id, None, "timeout")
         return None
+
+    def record_change(self, request_id, record: dict, frames: list):
+        """
+        奖励的重抽、除去经过的画面：frames 为 [(说明, 截图)]，与前一张相同的不存，存为 frames/<请求 id>-change-<序号>.png；
+        经过（点击、各画面、结果）写入 changes/<请求 id>.json。写入失败只记日志。
+        """
+        if not request_id:
+            return
+        try:
+            saved, last = [], None
+            for note, image in frames[:60]:
+                digest = hashlib.sha1(image[::8, ::8].tobytes()).hexdigest()
+                if digest == last:
+                    continue
+                last = digest
+                name = f"frames/{request_id}-change-{len(saved) + 1:02d}.png"
+                _write_atomic(self.mailbox / name, encode_png(image))
+                saved.append({"frame": name, "what": note})
+            record = {"id": request_id, **record, "frames": saved}
+            _write_atomic(self.mailbox / "changes" / f"{request_id}.json", json.dumps(record, ensure_ascii=False, indent=1).encode("utf-8"))
+        except Exception:
+            logger.exception("重抽、除去的画面保存失败")
 
     def _consumed(self, request_id: str, choice, source: str):
         """记录实际采用的结果；写入失败只记日志，不影响本次决策。"""

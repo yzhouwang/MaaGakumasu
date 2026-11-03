@@ -13,6 +13,8 @@
 采用决策模型在本请求候选中的最优项；GHL 跳过、超时或没有可执行的候选时照常问 LLM（--ghl-only 时回答 fallback）。
 课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。GHL 的 override 不受此限：
 --lesson-drinks b4v2 时 B4v2（目标 v2 给赛前用掉的饮料定价）在课程中用的饮料以 override 给出。
+技能卡奖励的再抽選（reroll）与カード除去（remove_<n>）只采用 GHL 的 override（实况桥 --deck rerolls 时由 deck-value 策略给出）：
+决策模型、参照策略与 LLM 都不选这两种候选，LLM 的提示中也不列出。
 
 Agent 只等 config/decider.json 的 timeout_s 秒（--agent-timeout 可覆盖）。Agent 已放弃的请求（consumed/ 中有超时或停止的记录，
 或已超过该时间）不再作答，只记一行日志：否则决策者中断或重启后，积压的旧请求各要等 GHL、问模型，正在等待的请求也会超时。
@@ -67,6 +69,14 @@ ANSWER_SCHEMA = {
     },
     "required": ["choice", "reason"],
 }
+
+
+# 奖励的再抽選与カード除去的候选 id：只采用 GHL 的 override。
+OFFER_CHANGE = re.compile(r"reroll|remove_\d+")
+
+
+def offer_change(candidate_id) -> bool:
+    return bool(candidate_id) and OFFER_CHANGE.fullmatch(candidate_id) is not None
 
 
 # GHL 的任务 → --ghl-scope 的名称。
@@ -134,7 +144,7 @@ def ghl_choice(answer: dict, request: dict, scope: set, policy: str = "decider",
         return live
 
     def allowed(live):
-        return live in ids and (lesson_drinks or task != "ghl/battle-lesson" or not live.startswith("drink_"))
+        return live in ids and not offer_change(live) and (lesson_drinks or task != "ghl/battle-lesson" or not live.startswith("drink_"))
 
     texts = {option[0]: option[1] for option in answer.get("options") or []}
     override = answer.get("override") or {}
@@ -309,6 +319,8 @@ class Decider:
             lines.append("Battle HUD (OCR): " + "; ".join(reading["hud"]))
         lines.append("Candidates:")
         for item in request["candidates"]:
+            if offer_change(item["id"]):
+                continue
             extra = reading.get("cards", {}).get(item["id"], {})
             description = f"- {item['id']}: {item.get('label', '')}"
             if extra.get("name"):
@@ -502,7 +514,8 @@ class Decider:
         # 处理前一个请求期间，本请求可能已被 Agent 放弃
         if self.skip_stale(path, request):
             return
-        ids = [item["id"] for item in request["candidates"]]
+        # 再抽選与カード除去只采用 GHL 的 override：模型的答复不在其中
+        ids = [item["id"] for item in request["candidates"] if not offer_change(item["id"])]
         created = created_at(request, path)
         # Agent 等到请求提出后 agent_timeout 秒为止：GHL 的等待与模型调用都在此之前结束，并留出余量让 Agent 读到答复
         deadline = created + self.agent_timeout - AGENT_MARGIN_S

@@ -395,6 +395,139 @@ class RewardScreenTest(unittest.TestCase):
         self.assertEqual(self.decider.requests, [])
 
 
+def ocr_token(text, box, confidence=1.0):
+    return {"text": text, "box": box, "confidence": confidence}
+
+
+# 奖励画面底部一行（合成的框，按真实画面的布局）：左「カード除去」与其剩余次数，中「受け取る」，右「再抽選」与其剩余次数。
+def offer_bottom_row(rerolls=4, removals=1):
+    return [
+        ocr_token("カード除去", [77, 1080, 118, 26]), ocr_token(f"あと{removals}回", [87, 1044, 82, 27]), ocr_token("受け取る", [299, 1078, 116, 33]),
+        ocr_token(f"あと{rerolls}回", [568, 1043, 84, 30]), ocr_token("再抽選", [574, 1079, 71, 31]),
+    ]
+
+
+class OfferChangeReadingTest(unittest.TestCase):
+    """奖励画面的再抽選、カード除去按钮与剩余次数，按钮是否可用，候选图标是否换了。"""
+
+    def test_buttons_and_counts(self):
+        self.assertEqual(
+            produce_actions.offer_change_buttons(offer_bottom_row()),
+            {"reroll": {"box": [574, 1079, 71, 31], "left": 4}, "remove": {"box": [77, 1080, 118, 26], "left": 1}},
+        )
+        # 饮料奖励只有「受け取る」；剩余次数读不到（或置信度低）时不收该按钮。
+        self.assertEqual(produce_actions.offer_change_buttons([ocr_token("受け取る", [299, 1078, 116, 33])]), {})
+        tokens = offer_bottom_row()
+        tokens[4 - 1] = ocr_token("あと4回", [568, 1043, 84, 30], 0.5)
+        self.assertEqual(set(produce_actions.offer_change_buttons(tokens)), {"remove"})
+
+    def test_button_enabled_by_its_background(self):
+        image = np.full((1280, 720, 3), 255, dtype=np.uint8)
+        self.assertTrue(produce_actions.button_enabled(image, [77, 1080, 118, 26]))
+        image[1060:1120, 50:80] = 187
+        self.assertFalse(produce_actions.button_enabled(image, [77, 1080, 118, 26]))
+
+    def test_icon_interiors_changed(self):
+        boxes = [[100 + 160 * i, 820, 130, 130] for i in range(3)]
+        before, after = change_frame((10, 20, 30)), change_frame((10, 99, 30))
+        self.assertEqual(produce_actions.offer_icons_changed(before, after, boxes), [1])
+        self.assertEqual(produce_actions.offer_icons_changed(before, before.copy(), boxes), [])
+
+
+def change_frame(cards=(10, 20, 30), rerolls=4, removals=1, dialog=False, grey_remove=False):
+    """合成奖励画面：image[0, 0..3, 0] 依次为候选数、是否对话框、再抽選与カード除去的剩余次数；候选图标内部按 cards 着色。"""
+    image = np.full((1280, 720, 3), 255, dtype=np.uint8)
+    image[0, 0, 0], image[0, 1, 0], image[0, 2, 0], image[0, 3, 0] = len(cards), int(dialog), rerolls, removals
+    for i, value in enumerate(cards):
+        image[838:932, 118 + 160 * i:212 + 160 * i] = value
+    if grey_remove:
+        image[1060:1120, 50:80] = 187
+    return image
+
+
+def fake_offer_ocr(context, image, roi):
+    """替身 OCR：奖励画面底部一行（剩余次数取自画面标记）；对话框画面读不到。"""
+    return offer_bottom_row(int(image[0, 2, 0]), int(image[0, 3, 0])) if roi == produce_actions.OFFER_CHANGE_ROI and not image[0, 1, 0] else []
+
+
+class ChangeDecider(ScriptedDecider):
+    def __init__(self, answers):
+        super().__init__(answers)
+        self.changes = []
+
+    def record_change(self, request_id, record, frames):
+        self.changes.append({**record, "shots": len(frames)})
+
+
+class RewardChangeTest(unittest.TestCase):
+    """再抽選与カード除去：作为候选交给决策者，按答复点击，遇确认对话框点确认，候选换了才算生效；未生效时下次不再提供。"""
+
+    def setUp(self):
+        layout = lambda image: {"candidates": [{"candidate_id": f"reward_{i + 1}", "box": [100 + 160 * i, 820, 130, 130]} for i in range(image[0, 0, 0])]}
+        for name, value in (("reward_layout", layout), ("ExternalDecider", SimpleNamespace(load=lambda: self.decider))):
+            original = getattr(produce_actions, name)
+            setattr(produce_actions, name, value)
+            self.addCleanup(setattr, produce_actions, name, original)
+        cls = produce_actions.ProduceChooseRewardExternal
+        cls._no_changes_next = False
+        self.addCleanup(setattr, cls, "_no_changes_next", False)
+        self.action = cls()
+        self.action.SETTLE_TIMEOUT, self.action.PREVIEW_DELAY, self.action.CHANGE_POLL, self.action.CHANGE_TIMEOUT = 0.5, 0, 0, 1.0
+        self.action._ocr = fake_offer_ocr
+        # 替身对话框识别：对话框画面左下的「キャンセル」（相谈「交換確認」的位置）
+        self.action._dialog_cancel = lambda context, image: [112, 1127, 207, 66] if image[0, 1, 0] else None
+
+    def run_with(self, answers, frames):
+        self.decider = ChangeDecider(answers)
+        controller = SequenceController(frames)
+        none = lambda *args, **kwargs: None
+        context = SimpleNamespace(tasker=SimpleNamespace(controller=controller, stopping=False), run_recognition=none, run_task=none)
+        self.assertTrue(self.action.run(context, None))
+        return controller
+
+    def test_reroll_without_a_dialog(self):
+        shown = change_frame()
+        controller = self.run_with([{"id": "reroll"}], [shown] * 4 + [change_frame((40, 50, 60), rerolls=3)])
+        kind, ids, _ = self.decider.requests[0]
+        self.assertEqual(ids, ["reward_1", "reward_2", "reward_3", "reroll", "remove_1", "remove_2", "remove_3"])
+        # 三次预览，再点「再抽選」：新候选连续两次截图一致后交回主循环。
+        self.assertEqual(controller.clicks[3:], [(609, 1094)])
+        self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [1, 2, 3], the count fell")
+        self.assertFalse(produce_actions.ProduceChooseRewardExternal._no_changes_next)
+
+    def test_a_count_that_falls_before_the_new_cards_does_not_end_the_wait(self):
+        shown = change_frame()
+        self.run_with([{"id": "reroll"}], [shown] * 4 + [change_frame(rerolls=3)] * 3 + [change_frame((40, 50, 60), rerolls=3)])
+        # 三张旧候选（次数已减）之后，新候选连续两张才算生效。
+        self.assertEqual((self.decider.changes[0]["outcome"], self.decider.changes[0]["shots"]), ("offer slots changed [1, 2, 3], the count fell", 5))
+
+    def test_removal_selects_the_card_and_confirms_the_dialog(self):
+        shown = change_frame()
+        frames = [shown] * 4 + [shown, change_frame(dialog=True), change_frame((10, 99, 30), removals=0)]
+        controller = self.run_with([{"id": "remove_2"}], frames)
+        # 选中第 2 张，点「カード除去」，点对话框右侧（与「キャンセル」对称）的确认。
+        self.assertEqual(controller.clicks[3:], [(325, 885), (136, 1093), (504, 1160)])
+        self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [2], the count fell")
+
+    def test_unconfirmed_change_is_not_offered_next_time(self):
+        shown = change_frame()
+        self.run_with([{"id": "reroll"}], [shown])
+        self.assertTrue(self.decider.changes[0]["outcome"].startswith("the offer did not change"))
+        self.run_with([{"id": "reward_1"}], [shown])
+        self.assertEqual(self.decider.requests[0][1], ["reward_1", "reward_2", "reward_3"])
+        self.assertFalse(produce_actions.ProduceChooseRewardExternal._no_changes_next)
+
+    def test_removal_button_disabled_is_not_tapped(self):
+        shown = change_frame()
+        controller = self.run_with([{"id": "remove_1"}], [shown] * 4 + [change_frame(grey_remove=True)])
+        self.assertEqual(controller.clicks[3:], [(165, 885)])
+        self.assertEqual(self.decider.changes[0]["outcome"], "カード除去 not enabled with the card selected")
+
+    def test_no_counts_left_no_candidates(self):
+        self.run_with([{"id": "reward_2"}], [change_frame(rerolls=0, removals=0)])
+        self.assertEqual(self.decider.requests[0][1], ["reward_1", "reward_2", "reward_3"])
+
+
 class MailboxTest(unittest.TestCase):
     def setUp(self):
         root = ROOT / "debug/research/produce/tests"
@@ -543,6 +676,15 @@ class GhlFirstTest(unittest.TestCase):
         self.assertIsNone(ghl_choice(answer, self.battle, {"exam"})[0])
         self.assertIsNone(ghl_choice({"id": "r1", "skip": "kind customize: not rebuilt"}, self.battle, self.scope)[0])
         self.assertIsNone(ghl_choice({"id": "r1", "task": "ghl/battle-exam", "decider": {"error": "timeout"}}, self.battle, self.scope)[0])
+
+    def test_offer_changes_only_by_override(self):
+        # 再抽選与カード除去只采用 GHL 的 override：决策模型的首选（重抽）不采用，取可执行的奖励；参照策略同样。
+        request = {"id": "r1", "kind": "reward", "candidates": [{"id": "reward_1"}, {"id": "reward_2"}, {"id": "reroll"}, {"id": "remove_1"}], "fallback": "reward_1"}
+        answer = ghl("ghl/card-offer", {"1": 0.5, "2": 0.3, "3": 0.2}, {"1": "reroll", "2": "reward_2", "3": "remove_1"}, ref={"policy": "B1v2", "key": "3"})
+        self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "reward_2")
+        self.assertIsNone(ghl_choice(answer, request, self.scope, policy="reference")[0])
+        answer["override"] = {"policy": "deck-value-deck-value-v1", "key": "1", "live": "reroll"}
+        self.assertEqual(ghl_choice(answer, request, self.scope)[0]["choice"], "reroll")
 
     def test_class_answer_and_reference_policy(self):
         request = {"id": "r1", "kind": "class_option", "candidates": [{"id": "Vo"}, {"id": "Vi"}], "fallback": "Vo"}
@@ -733,6 +875,16 @@ class HandoffTest(unittest.TestCase):
                 file.write(json.dumps({**answer, "id": request_id}, ensure_ascii=False) + "\n")
         with contextlib.redirect_stdout(io.StringIO()):
             decider.handle(write_request(self.mailbox, request_id, kind, candidates, fallback, **extra))
+
+    def test_the_model_neither_sees_nor_takes_offer_changes(self):
+        offers = self.offers + [{"id": "reroll", "label": "再抽選"}, {"id": "remove_1", "label": "カード除去"}]
+        self.answers = ["reroll"]
+        self.ask(self.decider(), "001", "reward", offers, "reward_1")
+        listed = self.calls[0]["prompt"].split("Candidates:", 1)[1].split("Fallback", 1)[0]
+        self.assertEqual(re.findall(r"^- ([^:]+):", listed, re.M), ["reward_1", "reward_2"])
+        # 模型答了重抽：不是有效答复，回答 fallback。
+        response = json.loads((self.mailbox / "responses" / "001.json").read_text(encoding="utf-8"))
+        self.assertEqual(response["choice"], "reward_1")
 
     def test_summary_reaches_the_next_model_prompt(self):
         decider = self.decider()
