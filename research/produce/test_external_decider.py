@@ -473,16 +473,29 @@ class RewardChangeTest(unittest.TestCase):
         self.addCleanup(setattr, cls, "_no_changes_next", False)
         self.action = cls()
         self.action.SETTLE_TIMEOUT, self.action.PREVIEW_DELAY, self.action.CHANGE_POLL, self.action.CHANGE_TIMEOUT = 0.5, 0, 0, 1.0
+        self.action.RECOVER_POLL = 0
         self.action._ocr = fake_offer_ocr
         # 替身对话框识别：对话框画面左下的「キャンセル」（相谈「交換確認」的位置）
         self.action._dialog_cancel = lambda context, image: [112, 1127, 207, 66] if image[0, 1, 0] else None
 
-    def run_with(self, answers, frames):
+    def run_with(self, answers, frames, result=True, stop_at=None):
+        """stop_at：第几张截图之后任务进入停止状态。"""
         self.decider = ChangeDecider(answers)
         controller = SequenceController(frames)
         none = lambda *args, **kwargs: None
-        context = SimpleNamespace(tasker=SimpleNamespace(controller=controller, stopping=False), run_recognition=none, run_task=none)
-        self.assertTrue(self.action.run(context, None))
+        self.stopped = []
+        tasker = SimpleNamespace(controller=controller, stopping=False, post_stop=lambda: self.stopped.append(True))
+        if stop_at is not None:
+            screencap, shots = controller.post_screencap, []
+
+            def counted():
+                shots.append(1)
+                tasker.stopping = len(shots) >= stop_at
+                return screencap()
+
+            controller.post_screencap = counted
+        context = SimpleNamespace(tasker=tasker, run_recognition=none, run_task=none)
+        self.assertEqual(self.action.run(context, None), result)
         return controller
 
     def test_reroll_without_a_dialog(self):
@@ -490,7 +503,7 @@ class RewardChangeTest(unittest.TestCase):
         controller = self.run_with([{"id": "reroll"}], [shown] * 4 + [change_frame((40, 50, 60), rerolls=3)])
         kind, ids, _ = self.decider.requests[0]
         self.assertEqual(ids, ["reward_1", "reward_2", "reward_3", "reroll", "remove_1", "remove_2", "remove_3"])
-        # 三次预览，再点「再抽選」：新候选连续两次截图一致后交回主循环。
+        # 三次预览，再点「再抽選」：新候选在连续两张截图中一致后交回主循环。
         self.assertEqual(controller.clicks[3:], [(609, 1094)])
         self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [1, 2, 3], the count fell")
         self.assertFalse(produce_actions.ProduceChooseRewardExternal._no_changes_next)
@@ -500,6 +513,33 @@ class RewardChangeTest(unittest.TestCase):
         self.run_with([{"id": "reroll"}], [shown] * 4 + [change_frame(rerolls=3)] * 3 + [change_frame((40, 50, 60), rerolls=3)])
         # 三张旧候选（次数已减）之后，新候选连续两张才算生效。
         self.assertEqual((self.decider.changes[0]["outcome"], self.decider.changes[0]["shots"]), ("offer slots changed [1, 2, 3], the count fell", 5))
+
+    def test_new_cards_must_settle_through_an_animation(self):
+        # 换牌动画中的两张不同的中间画面不算停稳：最后一组连续两张一致才算生效。
+        shown = change_frame()
+        frames = [shown] * 4 + [change_frame((40, 50, 60), rerolls=3), change_frame((90, 100, 110), rerolls=3), change_frame((140, 150, 160), rerolls=3)]
+        self.run_with([{"id": "reroll"}], frames)
+        self.assertEqual((self.decider.changes[0]["outcome"], self.decider.changes[0]["shots"]), ("offer slots changed [1, 2, 3], the count fell", 4))
+
+    def test_a_removal_that_shrinks_the_offer(self):
+        # 除去最后一张后不补抽、只剩两张：候选数变了，算生效。
+        shown = change_frame()
+        self.run_with([{"id": "remove_3"}], [shown] * 4 + [shown, change_frame((10, 20), removals=0)])
+        self.assertTrue(self.decider.changes[0]["outcome"].startswith("offer slots changed [1, 2, 3]"))
+
+    def test_a_screen_that_cannot_be_recovered_stops_the_task(self):
+        # 点击后画面既不是奖励画面也没有可关的对话框（例如没有「キャンセル」的弹窗）：停止任务，等人处理。
+        unknown = change_frame()
+        unknown[490:770, 80:640] = 60
+        self.run_with([{"id": "reroll"}], [change_frame()] * 4 + [unknown], result=False)
+        self.assertEqual(self.stopped, [True])
+        self.assertTrue(self.decider.changes[0]["outcome"].startswith("the offer did not change"))
+
+    def test_a_stop_before_the_button_tap_taps_nothing_more(self):
+        # 选中所除的卡之后任务停止：不再点「カード除去」。
+        shown = change_frame()
+        controller = self.run_with([{"id": "remove_2"}], [shown] * 6, result=False, stop_at=5)
+        self.assertEqual(controller.clicks[3:], [(325, 885)])
 
     def test_removal_selects_the_card_and_confirms_the_dialog(self):
         shown = change_frame()

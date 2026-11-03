@@ -394,6 +394,8 @@ class ProduceChooseRewardExternal(CustomAction):
     # 重抽、除去后等新候选的时限与截图间隔：候选图标连续两次截图都与之前不同（除去为该卡的位置）才算生效
     CHANGE_TIMEOUT = 12.0
     CHANGE_POLL = 0.4
+    # 未生效后回到奖励画面：每次截图的间隔，共 6 次
+    RECOVER_POLL = 1.0
     # 确认对话框左下的「キャンセル」（模板同特别指导；奖励画面上得分约 0.19）；确认按钮与之左右对称（相谈的「交換確認」同此）
     DIALOG_CANCEL = {"recognition": "TemplateMatch", "roi": [40, 1000, 400, 270], "template": "cancel.png", "threshold": 0.9}
     # 上一次重抽或除去未确认生效时，下一次询问不提供这两个候选，避免在同一画面上反复重试
@@ -491,8 +493,10 @@ class ProduceChooseRewardExternal(CustomAction):
     def _change_offer(self, context, decider, chosen, offers, before):
         """
         按答复重抽（再抽選）或除去一张候选（カード除去，先选中该卡），遇到确认对话框点其右侧的确认按钮，等奖励画面换上新的候选后
-        交回主循环。候选图标连续两次截图都与之前不同（除去为该卡的位置）才算生效：剩余次数可能先于新候选变化，只记入经过。
-        经过的各画面存入信箱（decider.record_change）。未确认生效时下一次询问不提供这两个候选。
+        交回主循环。生效的条件：候选图标与之前不同（除去为该卡的位置；候选数变了也算），且与上一张截图的图标完全相同（新候选已停稳）。
+        剩余次数可能先于新候选变化，只记入经过。经过的各画面存入信箱（decider.record_change）。
+        未确认生效时下一次询问不提供这两个候选，并先回到可用的奖励画面（_recover）；回不去则停止任务，等人处理。
+        每次点击前核对任务是否已停止。
 
         Returns:
             bool: 任务停止时返回 False，其余情况返回 True。
@@ -511,29 +515,42 @@ class ProduceChooseRewardExternal(CustomAction):
             return image
 
         def tap(box, note):
+            if context.tasker.stopping:
+                return False
             x, y, w, h = box
             controller.post_click(x + w // 2, y + h // 2).wait()
             record["steps"].append({"tap": [x + w // 2, y + h // 2], "what": note, "t": round(time.time() - started, 2)})
+            return True
 
         def finish(outcome, success):
             record["outcome"] = outcome
+            usable = True if success else self._recover(context, tap, shot)
             record["seconds"] = round(time.time() - started, 2)
             decider.record_change(chosen.get("request_id"), record, frames)
+            name = "再抽選" if key == "reroll" else "カード除去"
             if success:
-                logger.info(f"奖励{'再抽選' if key == 'reroll' else 'カード除去'}已生效：{outcome}")
-            else:
-                logger.warning(f"奖励{'再抽選' if key == 'reroll' else 'カード除去'}未确认生效：{outcome}；下一次询问不提供这两个候选")
-                ProduceChooseRewardExternal._no_changes_next = True
+                logger.info(f"奖励{name}已生效：{outcome}")
+                return True
+            ProduceChooseRewardExternal._no_changes_next = True
+            if usable is None:
+                return False
+            if not usable:
+                logger.error(f"奖励{name}未确认生效（{outcome}），画面也回不到奖励画面：停止任务，请人工处理后中断继续")
+                context.tasker.post_stop()
+                return False
+            logger.warning(f"奖励{name}未确认生效：{outcome}；下一次询问不提供这两个候选")
             return True
 
         if key == "remove":
-            tap(chosen["card_box"], "select the card to remove")
+            if not tap(chosen["card_box"], "select the card to remove"):
+                return False
             time.sleep(self.PREVIEW_DELAY)
             if not button_enabled(shot("selected"), chosen["box"]):
                 return finish("カード除去 not enabled with the card selected", False)
-        tap(chosen["box"], key)
+        if not tap(chosen["box"], key):
+            return False
         confirms = 0
-        last = None
+        settled = None
         deadline = time.time() + self.CHANGE_TIMEOUT
         while time.time() < deadline:
             if context.tasker.stopping:
@@ -545,22 +562,43 @@ class ProduceChooseRewardExternal(CustomAction):
                 if confirms >= 2:
                     return finish("a dialog still shows after two confirms", False)
                 x, y, w, h = cancel
-                tap([720 - x - w, y, w, h], "confirm the dialog")
+                if not tap([720 - x - w, y, w, h], "confirm the dialog"):
+                    return False
                 confirms += 1
-                last = None
+                settled = None
                 continue
-            layout = reward_layout(image)["candidates"]
+            layout = [candidate["box"] for candidate in reward_layout(image)["candidates"]]
             if len(layout) < 2 or not self._panel_bright(image):
-                last = None
+                settled = None
                 continue
-            changed = list(range(len(layout))) if len(layout) != len(boxes) else offer_icons_changed(before, image, boxes)
-            button = offer_change_buttons(self._ocr(context, image, OFFER_CHANGE_ROI)).get(key)
-            used = button is not None and button["left"] < chosen["left"]
-            state = (tuple(changed), used)
-            if (bool(changed) if index is None else index in changed) and state == last:
-                return finish(f"offer slots changed {[i + 1 for i in changed]}, {'the count fell' if used else 'the count not read lower'}", True)
-            last = state
+            # 候选数变了（除去后不补抽）时每个旧位置都算变了
+            changed = list(range(len(boxes))) if len(layout) != len(boxes) else offer_icons_changed(before, image, boxes)
+            if not (changed if index is None else index in changed):
+                settled = None
+                continue
+            if settled is not None and settled[0] == layout and not offer_icons_changed(settled[1], image, layout):
+                button = offer_change_buttons(self._ocr(context, image, OFFER_CHANGE_ROI)).get(key)
+                fell = "the count fell" if button is not None and button["left"] < chosen["left"] else "the count not read lower"
+                return finish(f"offer slots changed {[i + 1 for i in changed]}, {fell}", True)
+            settled = (layout, image)
         return finish(f"the offer did not change within {self.CHANGE_TIMEOUT:.0f} s", False)
+
+    def _recover(self, context, tap, shot):
+        """
+        重抽、除去未确认生效后回到可用的奖励画面：奖励画面（候选可定位、详情面板亮）在就好；左下为「キャンセル」的对话框点
+        「キャンセル」关掉。约 6 秒内回不去返回 False（调用方停止任务）；任务已停止返回 None。
+        """
+        for _ in range(6):
+            if context.tasker.stopping:
+                return None
+            image = shot("recover")
+            if len(reward_layout(image)["candidates"]) >= 2 and self._panel_bright(image):
+                return True
+            cancel = self._dialog_cancel(context, image)
+            if cancel and not tap(cancel, "close the dialog"):
+                return None
+            time.sleep(self.RECOVER_POLL)
+        return False
 
     def _dialog_cancel(self, context, image):
         """左下为「キャンセル」的确认对话框打开时返回该按钮的框，否则返回 None。"""
