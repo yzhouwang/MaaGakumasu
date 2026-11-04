@@ -274,11 +274,14 @@ def offer_change_buttons(tokens):
 
 
 def button_enabled(image, box):
-    """按钮文字左侧的按钮底色：可用时为白；不可用时发灰（未选中候选时的「カード除去」约为 187）。"""
+    """
+    按钮文字正上方、按钮之内一条的底色：可用时为白（255）；不可用时发灰（未选中候选时的「カード除去」为 189–233）。
+    取文字上方而非左侧：OCR 的文字框有时含左侧的「⊖」图标，左侧一条会落到按钮之外。
+    """
     array = rgb_image(image)
     x, y, w, h = box
-    strip = array[max(0, y - 8):y + h + 8, max(0, x - 16):max(1, x - 4)] if array is not None else None
-    return strip is not None and strip.size > 0 and float(np.median(strip.max(axis=2))) >= 240
+    band = array[max(0, y - 7):max(1, y - 2), x:x + w] if array is not None else None
+    return band is not None and band.size > 0 and float(np.median(band.max(axis=2))) >= 245
 
 
 def offer_icons_changed(before, after, boxes):

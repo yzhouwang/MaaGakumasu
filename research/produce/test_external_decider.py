@@ -424,8 +424,10 @@ class OfferChangeReadingTest(unittest.TestCase):
     def test_button_enabled_by_its_background(self):
         image = np.full((1280, 720, 3), 255, dtype=np.uint8)
         self.assertTrue(produce_actions.button_enabled(image, [77, 1080, 118, 26]))
-        image[1060:1120, 50:80] = 187
+        image[1060:1120, 50:210] = 187
         self.assertFalse(produce_actions.button_enabled(image, [77, 1080, 118, 26]))
+        # OCR 的框含左侧「⊖」图标（x 更小）时同样按文字上方的底色判断。
+        self.assertFalse(produce_actions.button_enabled(image, [63, 1079, 133, 30]))
 
     def test_icon_interiors_changed(self):
         boxes = [[100 + 160 * i, 820, 130, 130] for i in range(3)]
@@ -441,7 +443,7 @@ def change_frame(cards=(10, 20, 30), rerolls=4, removals=1, dialog=False, grey_r
     for i, value in enumerate(cards):
         image[838:932, 118 + 160 * i:212 + 160 * i] = value
     if grey_remove:
-        image[1060:1120, 50:80] = 187
+        image[1060:1120, 50:210] = 187
     return image
 
 
