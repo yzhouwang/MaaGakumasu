@@ -164,9 +164,20 @@ class AssistBadgeTest(unittest.TestCase):
         self.assertEqual(hand_names([matched("届いて！+", True)]), ["届いて！+!"])
         self.assertEqual(hand_names([matched("届いて！+", False)]), ["届いて！+"])
         self.assertEqual(hand_names([matched("届いて！", True)]), ["届いて！"])
-        # 「++」：本来就强化过的牌再加角标，牌组里就是强化版。
-        twice = {"box": [0, 0, 10, 10], "assist": True, "identity": {"database_card_id": "x", "status": "base_match_variant_unresolved", "unknown_reason": "extra_upgrade_markers", "database_name": "届いて！+"}}
-        self.assertEqual(hand_names([twice]), ["届いて！+"])
+        # 「++」「+++」：按显示的等级记（GHL 按牌组中这张牌自己的等级算支援卡加的级数）。只有支援卡让牌超过「+」，
+        # 角标没认出（False）或被右邻盖住（None）时也一样。
+        extra = lambda plus, assist: {
+            "box": [0, 0, 10, 10],
+            "assist": assist,
+            "identity": {"database_card_id": "x", "status": "base_match_variant_unresolved", "unknown_reason": "extra_upgrade_markers",
+                         "database_name": "届いて！+", "base_name": "届いて！", "observed_plus_count": plus},
+        }
+        self.assertEqual(hand_names([extra(2, True)]), ["届いて！++!"])
+        self.assertEqual(hand_names([extra(3, True)]), ["届いて！+++!"])
+        self.assertEqual(hand_names([extra(2, None)]), ["届いて！++!"])
+        self.assertEqual(hand_names([extra(2, False)]), ["届いて！++!"])
+        # 读出四个以上「+」是误读：按库名记。
+        self.assertEqual(hand_names([extra(4, True)]), ["届いて！+"])
 
 
 class LessonAttributeTest(unittest.TestCase):

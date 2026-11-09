@@ -6,10 +6,12 @@ GHL 的影子回放与决策模型按 LiveFrame 读取战斗状态（src/bridge/
 - st：体力；g：元气；
 - b：Buff（goodImpressionTurns、motivation、halfCostTurns、doubleCostTurns、nullifyDebuff），未显示为 0；
 - gib：好印象增加量 [百分比, 回合]；gie：好印象效果百分比；sb：得分提升 [百分比, 回合或 None]；
-- hand：手牌名（从左到右，「+」为强化，读不出为「?」）。战斗中再次强化的「+」牌显示「++」，GHL 没有这种牌，记为「+」。
+- hand：手牌名（从左到右，「+」为强化，读不出为「?」）。
   四五张手牌叠放时，右邻的牌盖住卡名末尾与卡面右缘的「+」：认出基础名而看不到强化标记的牌记为「基础名+?」，
   是该牌或其强化版，由 GHL 按它所记的牌组判断。
-  スキルカードサポート（支援卡头像加红「+」的角标）只在本场战斗中强化手牌：牌组里的牌仍是基础版，显示「X+」时记为「X+!」。
+  スキルカードサポート（支援卡头像加红「+」的角标）只在牌留在手牌中时把它提高一级（两张支援卡都成功时两级），
+  牌组里的牌不变。带角标的牌按显示的等级加「!」：「X+!」「X++!」「X+++!」，GHL 按牌组中这张牌自己的等级
+  算出支援卡加了几级（GHL 规则集 r11 的 SUPPORT-ASSIST）。「++」「+++」只能来自支援卡，没认出角标时也加「!」。
 
 另附 slots：每张手牌对应的请求候选 id（可出的牌为 card_N，不可出的为 unplayable_N），GHL 据此把手牌位置对应到候选；
 
@@ -82,17 +84,26 @@ def mark_assists(array, cards):
 
 
 def hand_names(cards):
-    """按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」，认出基础名而看不到强化标记的牌记为「基础名+?」，只在本场强化的牌记为「X+!」。"""
+    """
+    按卡牌框从左到右给出手牌名；身份未确认的牌记为「?」，认出基础名而看不到强化标记的牌记为「基础名+?」，
+    带スキルカードサポート角标的牌按显示的等级记为「X+!」「X++!」「X+++!」。
+    """
     names = []
     for card in sorted(cards, key=lambda card: card["box"][0]):
         identity = card.get("identity") or {}
         if identity.get("database_card_id") and identity.get("status") == "matched":
             name = card_name(identity)
-            # 角标加一个「+」的牌，牌组里是基础版；本来就强化过的牌显示「++」，走下面的 extra_upgrade_markers。
+            # 角标加一个「+」的牌，牌组里通常是基础版（四张叠放时右邻的牌可能盖住第二个「+」，由 GHL 按牌组判断）；
+            # 本来就强化过的牌显示「++」，走下面的 extra_upgrade_markers。
             names.append(name + "!" if card.get("assist") and name.endswith("+") else name)
         elif identity.get("database_card_id") and identity.get("unknown_reason") == "extra_upgrade_markers":
-            # 「++」：库中最高只有「+」，按库名记。
-            names.append(identity["database_name"])
+            # 「++」「+++」：库中最高只有「+」，游戏最高到「+++」。战斗中的强化只把基础版强化为「+」，只有支援卡让牌超过「+」，
+            # 所以没认出角标（卡牌半透明或变暗）或角标被右邻盖住时也按显示的等级记「!」。读出四个以上「+」是误读，按库名记。
+            plus = identity.get("observed_plus_count") or 0
+            if plus in (2, 3):
+                names.append((identity.get("base_name") or identity["database_name"].rstrip("+")) + "+" * plus + "!")
+            else:
+                names.append(identity["database_name"])
         elif identity.get("database_card_id") and identity.get("status") == "base_match_variant_unresolved":
             # 叠放的手牌只露出卡名前段（upgrade_not_visible_in_overlap），或两个识别视图的强化标记不一致。
             names.append((identity.get("base_name") or identity["database_name"].rstrip("+")) + "+?")
