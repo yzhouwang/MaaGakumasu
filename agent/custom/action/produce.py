@@ -518,6 +518,8 @@ class ProduceChooseRewardExternal(CustomAction):
         boxes = [offer["box"] for offer in offers]
         started = time.time()
         record = {"choice": chosen["id"], "left_before": chosen["left"], "steps": []}
+        # 点掉除去提示的时刻：等待新候选与回到奖励画面共用（至多两次，两次之间隔 NOTICE_RETAP 秒）
+        notices = []
         frames = []
 
         def shot(note):
@@ -535,7 +537,7 @@ class ProduceChooseRewardExternal(CustomAction):
 
         def finish(outcome, success):
             record["outcome"] = outcome
-            usable = True if success else self._recover(context, tap, shot)
+            usable = True if success else self._recover(context, tap, shot, notices)
             record["seconds"] = round(time.time() - started, 2)
             decider.record_change(chosen.get("request_id"), record, frames)
             name = "再抽選" if key == "reroll" else "カード除去"
@@ -561,7 +563,6 @@ class ProduceChooseRewardExternal(CustomAction):
         if not tap(chosen["box"], key):
             return False
         confirms = 0
-        notices = []
         settled = None
         deadline = time.time() + self.CHANGE_TIMEOUT
         while time.time() < deadline:
@@ -582,7 +583,7 @@ class ProduceChooseRewardExternal(CustomAction):
             layout = [candidate["box"] for candidate in reward_layout(image)["candidates"]]
             if len(layout) < 2 or not self._panel_bright(image):
                 # 除去后的「…を除去しました」提示：点掉才回到奖励画面（至多点两次，两次之间隔 NOTICE_RETAP 秒）
-                if len(notices) < 2 and (not notices or time.time() - notices[-1] >= self.NOTICE_RETAP) and self._notice(context, image):
+                if self._notice_due(notices) and self._notice(context, image):
                     if not tap(self.NOTICE_TAP, "dismiss the removal notice"):
                         return False
                     notices.append(time.time())
@@ -600,7 +601,7 @@ class ProduceChooseRewardExternal(CustomAction):
             settled = (layout, image)
         return finish(f"the offer did not change within {self.CHANGE_TIMEOUT:.0f} s", False)
 
-    def _recover(self, context, tap, shot):
+    def _recover(self, context, tap, shot, notices):
         """
         重抽、除去未确认生效后回到可用的奖励画面：奖励画面（候选可定位、详情面板亮）在就好；左下为「キャンセル」的对话框点
         「キャンセル」关掉。约 6 秒内回不去返回 False（调用方停止任务）；任务已停止返回 None。
@@ -614,10 +615,16 @@ class ProduceChooseRewardExternal(CustomAction):
             cancel = self._dialog_cancel(context, image)
             if cancel and not tap(cancel, "close the dialog"):
                 return None
-            if not cancel and self._notice(context, image) and not tap(self.NOTICE_TAP, "dismiss the removal notice"):
-                return None
+            if not cancel and self._notice_due(notices) and self._notice(context, image):
+                if not tap(self.NOTICE_TAP, "dismiss the removal notice"):
+                    return None
+                notices.append(time.time())
             time.sleep(self.RECOVER_POLL)
         return False
+
+    def _notice_due(self, notices):
+        """还可以点除去提示：至多两次，距上一次至少 NOTICE_RETAP 秒。"""
+        return len(notices) < 2 and (not notices or time.time() - notices[-1] >= self.NOTICE_RETAP)
 
     def _notice(self, context, image):
         """画面下方有「…を除去しました」提示条时返回 True。"""

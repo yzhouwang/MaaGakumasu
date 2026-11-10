@@ -626,6 +626,15 @@ class RewardChangeTest(unittest.TestCase):
         self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [2], the count fell")
         self.assertEqual(self.decider.changes[0]["steps"][-1]["what"], "dismiss the removal notice")
 
+    def test_a_notice_that_stays_is_tapped_at_most_twice(self):
+        # 提示一直不消失：等待超时、回到奖励画面也不成，任务停止；两处共用点击次数，至多点两次
+        shown = change_frame()
+        self.action.NOTICE_RETAP = 0
+        frames = [shown] * 4 + [shown, change_frame(dialog=True)] + [notice_frame()] * 20
+        controller = self.run_with([{"id": "remove_2"}], frames, result=False)
+        self.assertEqual(controller.clicks[3:].count((360, 985)), 2)
+        self.assertEqual(self.stopped, [True])
+
     def test_a_take_runs_the_confirm_as_external(self):
         # 按答复领取时领取确认知道是外部决策（不记「未接管」的警告）；领取后复位
         seen = []
