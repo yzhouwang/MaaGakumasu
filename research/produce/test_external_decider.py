@@ -503,8 +503,18 @@ def change_frame(cards=(10, 20, 30), rerolls=4, removals=1, dialog=False, grey_r
     return image
 
 
+def notice_frame():
+    """除去后的画面：奖励面板不在（暗），画面下方是「…を除去しました」提示条（image[0, 4, 0] 标记）。"""
+    image = change_frame(cards=())
+    image[490:770, 80:640] = 60
+    image[0, 4, 0] = 1
+    return image
+
+
 def fake_offer_ocr(context, image, roi):
-    """替身 OCR：奖励画面底部一行（剩余次数取自画面标记）；对话框画面读不到。"""
+    """替身 OCR：奖励画面底部一行（剩余次数取自画面标记）；对话框画面读不到；有提示条标记时读到除去的提示。"""
+    if roi == produce_actions.ProduceChooseRewardExternal.NOTICE_ROI:
+        return [ocr_token("本番前夜を除去しました", [117, 973, 290, 30])] if image[0, 4, 0] else []
     return offer_bottom_row(int(image[0, 2, 0]), int(image[0, 3, 0])) if roi == produce_actions.OFFER_CHANGE_ROI and not image[0, 1, 0] else []
 
 
@@ -606,6 +616,15 @@ class RewardChangeTest(unittest.TestCase):
         # 选中第 2 张，点「カード除去」，点对话框右侧（与「キャンセル」对称）的确认。
         self.assertEqual(controller.clicks[3:], [(325, 885), (136, 1093), (504, 1160)])
         self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [2], the count fell")
+
+    def test_the_removal_notice_is_dismissed(self):
+        # 除去确认后先回到下面的画面并显示「…を除去しました」：点掉一次（提示淡出时不再点），奖励画面换上补抽的卡才算生效
+        shown = change_frame()
+        frames = [shown] * 4 + [shown, change_frame(dialog=True), notice_frame(), notice_frame(), change_frame((10, 99, 30), removals=0)]
+        controller = self.run_with([{"id": "remove_2"}], frames)
+        self.assertEqual(controller.clicks[3:], [(325, 885), (136, 1093), (504, 1160), (360, 985)])
+        self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [2], the count fell")
+        self.assertEqual(self.decider.changes[0]["steps"][-1]["what"], "dismiss the removal notice")
 
     def test_unconfirmed_change_is_not_offered_next_time(self):
         shown = change_frame()

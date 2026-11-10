@@ -398,6 +398,11 @@ class ProduceChooseRewardExternal(CustomAction):
     RECOVER_POLL = 1.0
     # 确认对话框左下的「キャンセル」（模板同特别指导；奖励画面上得分约 0.19）；确认按钮与之左右对称（相谈的「交換確認」同此）
     DIALOG_CANCEL = {"recognition": "TemplateMatch", "roi": [40, 1000, 400, 270], "template": "cancel.png", "threshold": 0.9}
+    # カード除去确认后，游戏先回到奖励下面的画面（课程结果等），画面下方显示「…を除去しました」提示条（约 y 945–1115），
+    # 点掉后奖励画面才回来、换上补抽的卡。读提示条上部的文字，点其上部（同特别指导的提示条）；点后 NOTICE_RETAP 秒内不再点
+    NOTICE_ROI = [40, 940, 640, 120]
+    NOTICE_TAP = [330, 970, 60, 30]
+    NOTICE_RETAP = 1.5
     # 上一次重抽或除去未确认生效时，下一次询问不提供这两个候选，避免在同一画面上反复重试
     _no_changes_next = False
 
@@ -550,6 +555,7 @@ class ProduceChooseRewardExternal(CustomAction):
         if not tap(chosen["box"], key):
             return False
         confirms = 0
+        notices = []
         settled = None
         deadline = time.time() + self.CHANGE_TIMEOUT
         while time.time() < deadline:
@@ -569,6 +575,11 @@ class ProduceChooseRewardExternal(CustomAction):
                 continue
             layout = [candidate["box"] for candidate in reward_layout(image)["candidates"]]
             if len(layout) < 2 or not self._panel_bright(image):
+                # 除去后的「…を除去しました」提示：点掉才回到奖励画面（至多点两次，两次之间隔 NOTICE_RETAP 秒）
+                if len(notices) < 2 and (not notices or time.time() - notices[-1] >= self.NOTICE_RETAP) and self._notice(context, image):
+                    if not tap(self.NOTICE_TAP, "dismiss the removal notice"):
+                        return False
+                    notices.append(time.time())
                 settled = None
                 continue
             # 候选数变了（除去后不补抽）时每个旧位置都算变了
@@ -597,8 +608,14 @@ class ProduceChooseRewardExternal(CustomAction):
             cancel = self._dialog_cancel(context, image)
             if cancel and not tap(cancel, "close the dialog"):
                 return None
+            if not cancel and self._notice(context, image) and not tap(self.NOTICE_TAP, "dismiss the removal notice"):
+                return None
             time.sleep(self.RECOVER_POLL)
         return False
+
+    def _notice(self, context, image):
+        """画面下方有「…を除去しました」提示条时返回 True。"""
+        return any("除去しました" in item["text"] and item["confidence"] >= 0.6 for item in self._ocr(context, image, self.NOTICE_ROI))
 
     def _dialog_cancel(self, context, image):
         """左下为「キャンセル」的确认对话框打开时返回该按钮的框，否则返回 None。"""
