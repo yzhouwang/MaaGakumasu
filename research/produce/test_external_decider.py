@@ -626,6 +626,19 @@ class RewardChangeTest(unittest.TestCase):
         self.assertEqual(self.decider.changes[0]["outcome"], "offer slots changed [2], the count fell")
         self.assertEqual(self.decider.changes[0]["steps"][-1]["what"], "dismiss the removal notice")
 
+    def test_a_take_runs_the_confirm_as_external(self):
+        # 按答复领取时领取确认知道是外部决策（不记「未接管」的警告）；领取后复位
+        seen = []
+        shown = change_frame()
+        self.decider = ChangeDecider([{"id": "reward_2"}])
+        controller = SequenceController([shown])
+        tasker = SimpleNamespace(controller=controller, stopping=False, post_stop=lambda: None)
+        context = SimpleNamespace(tasker=tasker, run_recognition=lambda *a, **k: None,
+                                  run_task=lambda *a, **k: seen.append(produce_actions.ProduceChooseRewardExternal._taking))
+        self.assertTrue(self.action.run(context, None))
+        self.assertEqual(seen, [True])
+        self.assertFalse(produce_actions.ProduceChooseRewardExternal._taking)
+
     def test_unconfirmed_change_is_not_offered_next_time(self):
         shown = change_frame()
         self.run_with([{"id": "reroll"}], [shown])

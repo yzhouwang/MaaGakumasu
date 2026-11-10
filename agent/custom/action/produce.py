@@ -405,6 +405,8 @@ class ProduceChooseRewardExternal(CustomAction):
     NOTICE_RETAP = 1.5
     # 上一次重抽或除去未确认生效时，下一次询问不提供这两个候选，避免在同一画面上反复重试
     _no_changes_next = False
+    # 本动作正在按答复领取（_take）：领取确认时据此区分外部决策与原有选择
+    _taking = False
 
     def run(self, context, argv):
         decider = ExternalDecider.load()
@@ -467,7 +469,11 @@ class ProduceChooseRewardExternal(CustomAction):
         x, y, w, h = chosen["box"]
         context.tasker.controller.post_click(x + w // 2, y + h // 2).wait()
         time.sleep(self.PREVIEW_DELAY)
-        context.run_task("ProduceChooseConfirm")
+        ProduceChooseRewardExternal._taking = True
+        try:
+            context.run_task("ProduceChooseConfirm")
+        finally:
+            ProduceChooseRewardExternal._taking = False
         return True
 
     def _offer_changes(self, context, image, offers):
@@ -677,6 +683,11 @@ class ProduceRewardConfirm(CustomAction):
     def run(self, context, argv):
         if context.tasker.stopping:
             return False
+        if not ProduceChooseRewardExternal._taking:
+            decider = ExternalDecider.load()
+            if decider and decider.handles("reward"):
+                # 外部决策启用时奖励本应由它决定；走到这里说明奖励布局没认出或没有有效答复，所领的卡不在信箱里
+                logger.warning("外部决策没有接管这次奖励（奖励布局未认出或没有有效答复），按原有规则领取当前选中的候选")
         session = SESSIONS.get(context)
         if session:
             session.pop("reward_receive_action", None)
