@@ -9,7 +9,8 @@
     python tools/decider/opus_decider.py --ghl              # GHL 优先：GHL 的决策模型能答的由它答，其余照常问 LLM
 
 --ghl：GHL（gakumas-headless-lab）的实况桥（scripts/maa/live.ts，配合 ghl_readings.py --follow 与决策模型服务）
-把它对每个请求的选择写入信箱的 ghl/answers.jsonl。本决策者对范围内的请求先等 GHL 的选择（--ghl-wait 秒），
+把它对每个请求的选择写入信箱的 ghl/answers.jsonl。本决策者对范围内的请求先等 GHL 的选择（--ghl-wait 秒；周与职业课画面
+--ghl-wait-week 秒，游戏在这些画面不计时，GHL 偶尔答得慢时宁可多等），
 采用决策模型在本请求候选中的最优项；GHL 跳过、超时或没有可执行的候选时照常问 LLM（--ghl-only 时回答 fallback）。
 课程中默认不采用饮料：决策模型的课程目标把饮料当作免费（--ghl-lesson-drinks 允许）。GHL 的 override 不受此限：
 --lesson-drinks b4v2 时 B4v2（目标 v2 给赛前用掉的饮料定价）在课程中用的饮料以 override 给出。
@@ -506,8 +507,14 @@ class Decider:
             if answer:
                 return ghl_choice(answer, request, self.ghl_scope, self.args.ghl_policy, self.args.ghl_lesson_drinks)
             if time.time() >= until:
-                return None, f"no GHL answer within {self.args.ghl_wait:.0f} s of the request"
+                return None, f"no GHL answer within {self.ghl_wait_for(request['kind']):.0f} s of the request"
             time.sleep(0.2)
+
+    def ghl_wait_for(self, kind: str) -> float:
+        """等 GHL 的秒数：周与职业课画面为 --ghl-wait-week（未给时同 --ghl-wait），其余为 --ghl-wait。"""
+        if kind in ("week", "class_option") and self.args.ghl_wait_week is not None:
+            return self.args.ghl_wait_week
+        return self.args.ghl_wait
 
     def handle(self, path: Path):
         request = json.loads(path.read_text(encoding="utf-8"))
@@ -523,7 +530,7 @@ class Decider:
         ghl_note = ""
         if self.args.ghl:
             started = time.time()
-            answer, why = self.ghl_answer(request, min(created + self.args.ghl_wait, deadline))
+            answer, why = self.ghl_answer(request, min(created + self.ghl_wait_for(request["kind"]), deadline))
             if answer:
                 meta = {"seconds": round(time.time() - started, 1)}
                 response = {"id": request["id"], "choice": answer["choice"], "reason": answer["reason"], "source": "ghl", "meta": meta}
@@ -534,7 +541,7 @@ class Decider:
                 response = {"id": request["id"], "choice": request.get("fallback"), "reason": f"GHL only; {why}", "source": "fallback"}
                 self.finish(path, request, {}, "", response)
                 return
-        plan = self.ghl_plan(request, min(created + self.args.ghl_wait, deadline)) if self.args.ghl else None
+        plan = self.ghl_plan(request, min(created + self.ghl_wait_for(request["kind"]), deadline)) if self.args.ghl else None
         if request["kind"] == "battle" and not self.args.no_vision:
             try:
                 if self.reader is None:
@@ -633,6 +640,7 @@ def parse_args(argv=None):
     parser.add_argument("--ghl-scope", default="exam,lesson,week,offer", help="GHL 决定的范围：exam、lesson、week（含职业课）、offer，逗号分隔")
     parser.add_argument("--ghl-policy", choices=("decider", "reference"), default="decider", help="decider：决策模型；reference：GHL 的参照策略（B4/B1v2）")
     parser.add_argument("--ghl-wait", type=float, default=20, help="等 GHL 选择的秒数，超时则照常问 LLM")
+    parser.add_argument("--ghl-wait-week", type=float, default=None, help="周与职业课画面等 GHL 的秒数（默认同 --ghl-wait）")
     parser.add_argument("--ghl-lesson-drinks", action="store_true", help="允许课程中采用 GHL 选的饮料")
     parser.add_argument("--ghl-only", action="store_true", help="不问 LLM：GHL 不答的请求回答 fallback（联调用）")
     args = parser.parse_args(argv)

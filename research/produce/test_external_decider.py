@@ -911,6 +911,21 @@ class DeciderDeadlineTest(unittest.TestCase):
         # 刚提出的请求等满 1 秒。
         self.assertGreaterEqual(seconds["fresh"], 0.9)
 
+    def test_week_screens_wait_longer_for_ghl(self):
+        decider = Decider(decider_args(self.mailbox, "--ghl", "--ghl-only", "--ghl-wait", "0.2", "--ghl-wait-week", "1", "--no-vision"))
+        seconds = {}
+        for request_id, kind in (("week", "week"), ("battle", "battle")):
+            path = write_request(self.mailbox, request_id, kind, self.candidates, "rest")
+            started = time.time()
+            self.handle(decider, path)
+            seconds[request_id] = time.time() - started
+        responses = self.responses()
+        self.assertGreaterEqual(seconds["week"], 0.9)
+        self.assertIn("no GHL answer within 1 s of the request", responses["week"]["reason"])
+        self.assertLess(seconds["battle"], 0.8)
+        # 未给 --ghl-wait-week 时周画面同 --ghl-wait
+        self.assertEqual(Decider(decider_args(self.mailbox, "--ghl-wait", "3")).ghl_wait_for("week"), 3)
+
     def test_model_call_is_capped_by_the_agent_wait(self):
         decider = Decider(decider_args(self.mailbox, "--agent-timeout", "100", "--call-timeout", "420"))
         timeouts = []
