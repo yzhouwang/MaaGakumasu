@@ -436,6 +436,62 @@ class OfferChangeReadingTest(unittest.TestCase):
         self.assertEqual(produce_actions.offer_icons_changed(before, before.copy(), boxes), [])
 
 
+def offer_row(frames, art=(True, True, True), x0=157, pitch=139):
+    """合成奖励画面的一行候选（720x1280，白底）：frames 为各张的边框，"grey" 为灰色框、"silver" 为认不出的浅色框、
+    None 为空位；art 为各位置内部是否画卡面（彩色条纹）。卡宽 128，y 820。"""
+    image = np.full((1280, 720, 3), 255, dtype=np.uint8)
+    for i, (frame, painted) in enumerate(zip(frames, art)):
+        x = x0 + i * pitch
+        if painted:
+            for k in range(0, 128, 8):
+                image[820 + 6:820 + 122, x + 6 + k // 2:x + 10 + k // 2] = (40, 160, 230) if k % 16 else (230, 80, 40)
+                image[820 + 6 + k:820 + 10 + k, x + 6:x + 122] = (30, 200, 90)
+        color = {"grey": (120, 120, 120), "silver": (225, 220, 235)}.get(frame)
+        if color:
+            image[820:948, x:x + 4] = image[820:948, x + 124:x + 128] = color
+            image[820:824, x:x + 128] = image[944:948, x:x + 128] = color
+    return image
+
+
+class RewardLayoutTest(unittest.TestCase):
+    """奖励候选的定位：认出灰色边框的卡定间距，边框认不出但像卡面的位置补位，空位与只认出一张时不补。"""
+
+    def boxes(self, image):
+        layout = produce_actions.reward_layout(image)
+        return [c["box"][0] for c in layout["candidates"]], layout.get("filled"), layout["status"]
+
+    def test_three_grey_frames(self):
+        self.assertEqual(self.boxes(offer_row(("grey", "grey", "grey")))[:2], ([157, 296, 435], []))
+
+    def test_a_card_between_two_frames_is_filled(self):
+        # 中间的卡边框认不出：两张相距两个间距，中间像卡面就补上
+        self.assertEqual(self.boxes(offer_row(("grey", "silver", "grey")))[:2], ([157, 296, 435], [1]))
+
+    def test_a_card_at_the_edge_is_filled(self):
+        # 边上的卡边框认不出：两张相邻认出，旁边像卡面的位置补上（以前只给两张候选）
+        self.assertEqual(self.boxes(offer_row(("silver", "grey", "grey")))[:2], ([157, 296, 435], [0]))
+
+    def test_empty_slots_are_not_filled(self):
+        # 两张候选居中：两旁是对话框底色，不补
+        self.assertEqual(self.boxes(offer_row(("grey", "grey"), (True, True), x0=227))[:2], ([227, 366], []))
+
+    def test_a_gap_that_is_not_a_card_breaks_the_row(self):
+        # 两张认出的卡之间是空白：不是一行相连的候选，不给布局
+        self.assertEqual(self.boxes(offer_row(("grey", None, "grey"), (True, False, True)))[0], [])
+
+    def test_one_frame_is_not_enough(self):
+        # 只认出一张的边框时不补位（特别指导的卡牌网格、相谈的列表也会这样）
+        self.assertEqual(self.boxes(offer_row(("silver", "grey", "silver")))[2], "ambiguous_frames")
+
+    def test_a_neighbour_frame_clipped_by_the_selection_still_fits(self):
+        # 选中项的括号遮掉邻卡左边框几个像素：认出的框 x 偏 3、宽少 3，差不齐也按平均间距对上
+        image = offer_row(("grey", "grey", "grey"))
+        image[820:948, 296:300] = 255
+        image[820:948, 299:303] = (120, 120, 120)
+        image[820:824, 296:299] = image[944:948, 296:299] = 255
+        self.assertEqual(self.boxes(image)[0], [157, 296, 435])
+
+
 def change_frame(cards=(10, 20, 30), rerolls=4, removals=1, dialog=False, grey_remove=False):
     """合成奖励画面：image[0, 0..3, 0] 依次为候选数、是否对话框、再抽選与カード除去的剩余次数；候选图标内部按 cards 着色。"""
     image = np.full((1280, 720, 3), 255, dtype=np.uint8)

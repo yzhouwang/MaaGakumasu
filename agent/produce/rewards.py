@@ -162,6 +162,40 @@ def selection_pixels(array, box):
     )))
 
 
+# 候选一行排开、彼此相连，相邻两张的间距为卡宽加 4–24 像素。认不出灰色边框的卡（银色等其它边框）不作种子，
+# 由间距补位；补位处须像卡面：内部去掉边缘后灰度起伏大、近白像素不多。对话框底色平坦近白（起伏约 0、近白约 1.0），
+# 卡面内部的起伏约 29 以上、近白不超过约 0.7。至少要认出两张的边框：只认出一张时不补位（特别指导的卡牌网格、
+# 相谈的商品列表也会有一张这样的框）。
+CARD_INTERIOR_STD = 15
+CARD_INTERIOR_WHITE = .85
+
+
+def card_like(array, box):
+    """box 内部（去掉边缘 18 像素）像一张候选卡面：灰度起伏够大、近白像素不多。"""
+    x, y, w, h = box
+    inner = array[y + 18:y + h - 18, x + 18:x + w - 18].reshape(-1, 3).astype(np.int16)
+    if not inner.size:
+        return False
+    return float(inner.mean(axis=1).std()) >= CARD_INTERIOR_STD and float((inner.min(axis=1) >= 235).mean()) <= CARD_INTERIOR_WHITE
+
+
+def grid_pitch(gaps, w):
+    """
+    认出边框的相邻候选之差 → 网格间距，须在卡宽加 4 到 24 之间，各差都是它的整数倍（误差 4% 以内）。
+    先按原规则取最小的差；不成立时（两张之间夹着认不出边框的卡，相差两个或三个间距；或选中项的括号遮掉邻卡边框
+    的几个像素，差变得不齐）按各差含几个间距取平均间距。找不到时返回 None。
+    """
+    pitch = min(gaps)
+    if w + 4 <= pitch <= w + 24 and all(abs(gap / pitch - round(gap / pitch)) <= .04 for gap in gaps):
+        return pitch
+    for k in (1, 2, 3):
+        counts = [max(1, round(gap * k / min(gaps))) for gap in gaps]
+        pitch = sum(gaps) / sum(counts)
+        if w + 4 <= pitch <= w + 24 and all(abs(gap - n * pitch) <= .04 * pitch for gap, n in zip(gaps, counts)):
+            return pitch
+    return None
+
+
 def reward_layout(image):
     array = rgb_image(image)
     if array is None or array.shape != (1280, 720, 3):
@@ -179,14 +213,15 @@ def reward_layout(image):
     w, h = (int(np.median([b[i] for b in seeds])) for i in (2, 3))
     y = int(np.median([b[1] for b in seeds]))
     gaps = [b[0] - a[0] for a, b in zip(seeds, seeds[1:])]
-    pitch = min(gaps)
-    if not w + 4 <= pitch <= w + 24 or any(abs(gap / pitch - round(gap / pitch)) > .04 for gap in gaps):
+    pitch = grid_pitch(gaps, w)
+    if pitch is None:
         return {"status": "ambiguous_spacing", "candidates": [], "selected_index": None}
     # 只补齐经过画面核验的网格位置；角标可能将选中卡牌的边框分成多段，
-    # 少了一段边框不代表少了一张候选牌。
-    boxes = []
+    # 少了一段边框不代表少了一张候选牌。边框认不出的位置像卡面也算（filled 记下这些位置）。
+    found = {}
+    filled = []
     for step in range(-4, 5):
-        x = seeds[0][0] + step * pitch
+        x = seeds[0][0] + round(step * pitch)
         if x < left or x + w > left + width:
             continue
         dx, dy = x - left, y - top
@@ -197,8 +232,23 @@ def reward_layout(image):
             gray[dy + h - 4:dy + h, dx + 12:dx + w - 12].any(axis=0).mean(),
         ]
         if sum(value > .55 for value in sides) >= 3 or (max(sides) > .55 and selection_pixels(array, [x, y, w, h]) >= 600):
-            boxes.append([x, y, w, h])
-    if not 2 <= len(boxes) <= 4 or any(not any(abs(seed[0] - box[0]) <= 3 for box in boxes) for seed in seeds):
+            found[step] = [x, y, w, h]
+        elif card_like(array, [x, y, w, h]):
+            found[step] = [x, y, w, h]
+            filled.append(step)
+    # 候选彼此相连：只取包含全部种子的那一段连续位置，中间断开说明画面不是一行候选
+    steps = sorted(found)
+    runs, run = [], []
+    for step in steps:
+        if run and step != run[-1] + 1:
+            runs.append(run)
+            run = []
+        run.append(step)
+    if run:
+        runs.append(run)
+    seeded = [r for r in runs if all(any(abs(seed[0] - found[s][0]) <= 3 for s in r) for seed in seeds)]
+    boxes = [found[s] for s in seeded[0]] if seeded else []
+    if not 2 <= len(boxes) <= 4:
         return {"status": "incomplete_frames", "candidates": [], "selected_index": None}
     scores = [selection_pixels(array, box) for box in boxes]
     selected = [i for i, score in enumerate(scores) if score >= 600]
@@ -206,7 +256,8 @@ def reward_layout(image):
         "status": "ready" if len(selected) == 1 else "selection_unconfirmed",
         "candidates": [{"candidate_id": f"reward_{i + 1}", "box": box, "highlight_pixels": scores[i]} for i, box in enumerate(boxes)],
         "selected_index": selected[0] if len(selected) == 1 else None,
-        "detector": "single_row_frame_and_outer_orange_brackets_v1",
+        "detector": "single_row_frame_and_outer_orange_brackets_v2",
+        "filled": [i for i, s in enumerate(seeded[0]) if s in filled],
     }
 
 
