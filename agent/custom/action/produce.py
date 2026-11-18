@@ -11,10 +11,13 @@ from produce.console import policy_name
 from produce.decider import ExternalDecider, run_interactive
 from produce.options import ProduceKeepDrinkAuto, ProduceChooseWorkAuto, ProduceChooseMirrorAuto, ProduceChooseOptionsAuto
 from produce.rewards import (
+    LEGEND_TAKE_BUTTON,
+    LEGEND_TITLE_ROI,
     OFFER_CHANGE_ROI,
     RewardPreview,
     reward_layout,
     button_enabled,
+    legend_pick_layout,
     offer_icons_changed,
     offer_change_buttons,
 )
@@ -27,7 +30,7 @@ __all__ = [
     "ProduceChooseEventBase", "ProduceChooseEventAuto", "ProduceChooseNIAEventAuto", "ProduceCardsAuto",
     "ProduceChooseWorkAuto", "ProduceChooseOptionsAuto", "ProduceChooseMirrorAuto", "ProduceKeepDrinkAuto", "ProduceRewardConfirm",
     "ProduceRewardExternalReady", "ProduceChooseRewardExternal", "ProduceCustomizeExternalReady", "ProduceCustomizeExternal",
-    "ProduceConsultExternal", "ProduceDeckEditExternalReady", "ProduceDeckEditExternal",
+    "ProduceConsultExternal", "ProduceDeckEditExternalReady", "ProduceDeckEditExternal", "ProduceLegendPick",
 ]
 
 
@@ -683,6 +686,134 @@ class ProduceChooseRewardExternal(CustomAction):
         logger.info("奖励改用原有选择")
         context.run_task("ProduceChooseGetFlag", pipeline_override={"ProduceChooseRewardExternal": {"enabled": False}})
         return True
+
+
+@AgentServer.custom_action("ProduceLegendPick")
+class ProduceLegendPick(CustomAction):
+    """
+    中间考试后的 Legend 技能卡选择（左上角「SELECT 獲得」，从网格中的几张 Legend 卡中选一张；2026-11 的游戏更新后出现）。
+
+    外部决策启用（reward）且有两张以上时，逐张点选、截取详情画面并读出顶部详情面板的卡名，作为 reward 请求交给外部决策者
+    （state.screen 为 legend_pick，state.names 为各张的卡名，读不到为 None）；外部决策未启用或没有有效答复时选第一张。
+    选中后核对选中括号与「獲得」可用再按「獲得」，画面离开（左上角标题消失）即完成。按后未离开时重试，仍未离开则交还主循环
+    （主循环会再次进入本节点）。这个画面没有「不领取」，也没有重抽与除去。
+    """
+
+    SETTLE_TIMEOUT = 3.0
+    PREVIEW_DELAY = 0.8
+    LEAVE_TIMEOUT = 5.0
+    POLL = 0.4
+    TAKE_TRIES = 3
+
+    def run(self, context, argv):
+        controller = context.tasker.controller
+        image, layout = self._settled_layout(context)
+        if image is None:
+            return False
+        offers = layout["candidates"]
+        if not offers:
+            logger.warning(f"Legend 技能卡选择：认不出卡牌网格（{layout['status']}），交还主循环")
+            return True
+        decider = ExternalDecider.load()
+        names = [None] * len(offers)
+        chosen_index = 0
+        if decider and decider.handles("reward") and len(offers) >= 2:
+            image = image.copy()
+            previews = {}
+            for index, offer in enumerate(offers):
+                self._tap(context, offer["box"])
+                time.sleep(self.PREVIEW_DELAY)
+                if context.tasker.stopping:
+                    return False
+                preview = controller.post_screencap().wait().get().copy()
+                if not self._on_screen(context, preview):
+                    logger.warning("Legend 技能卡选择画面在预览时离开，不再点击")
+                    return True
+                previews[f"offer{index + 1}"] = preview
+                names[index] = self._title(context, preview)
+            candidates = [
+                {
+                    "id": offer["candidate_id"],
+                    "label": f"第 {index + 1} 张 Legend 技能卡：{names[index] or '卡名未读出'}（详情见 offer{index + 1} 截图）",
+                    "box": offer["box"],
+                }
+                for index, offer in enumerate(offers)
+            ]
+            chosen = decider.ask(
+                "reward", image, candidates, fallback=candidates[0]["id"], extra_images=previews,
+                state={"screen": "legend_pick", "names": names}, context={"screen": "legend_pick"},
+                stopping=lambda: context.tasker.stopping,
+            )
+            if context.tasker.stopping:
+                return False
+            if chosen:
+                chosen_index = next(index for index, offer in enumerate(offers) if offer["candidate_id"] == chosen["id"])
+            else:
+                logger.info("Legend 技能卡选择：没有有效答复，选第一张")
+        name = names[chosen_index]
+        logger.info(f"Legend 技能卡选择：第 {chosen_index + 1} 张{f'「{name}」' if name else ''}，按「獲得」")
+        return self._take(context, offers[chosen_index]["box"], chosen_index)
+
+    def _take(self, context, box, index):
+        """选中第 index 张，核对选中括号与「獲得」可用后按下，等画面离开；未离开时重试。"""
+        controller = context.tasker.controller
+        for _ in range(self.TAKE_TRIES):
+            if context.tasker.stopping:
+                return False
+            self._tap(context, box)
+            time.sleep(self.PREVIEW_DELAY)
+            image = controller.post_screencap().wait().get()
+            if not self._on_screen(context, image):
+                return True
+            layout = legend_pick_layout(image)
+            if layout["selected_index"] != index or not layout["take_enabled"]:
+                logger.warning(f"Legend 技能卡选择：第 {index + 1} 张未确认选中（选中 {layout['selected_index']}，「獲得」可用 {layout['take_enabled']}），重新点选")
+                continue
+            if context.tasker.stopping:
+                return False
+            self._tap(context, LEGEND_TAKE_BUTTON)
+            deadline = time.time() + self.LEAVE_TIMEOUT
+            while time.time() < deadline and not context.tasker.stopping:
+                time.sleep(self.POLL)
+                if not self._on_screen(context, controller.post_screencap().wait().get()):
+                    logger.info("已获得 Legend 技能卡")
+                    return True
+            logger.warning("Legend 技能卡选择：按「獲得」后画面未离开，重试")
+        logger.warning("Legend 技能卡选择：未能获得，交还主循环")
+        return True
+
+    def _settled_layout(self, context):
+        """等网格显示完整：认出候选或超过 SETTLE_TIMEOUT 秒为止。任务停止时截图为 None。"""
+        deadline = time.time() + self.SETTLE_TIMEOUT
+        while True:
+            if context.tasker.stopping:
+                return None, None
+            image = context.tasker.controller.post_screencap().wait().get()
+            layout = legend_pick_layout(image)
+            if layout["candidates"] or time.time() >= deadline:
+                return image, layout
+            time.sleep(self.POLL)
+
+    @staticmethod
+    def _on_screen(context, image):
+        """仍在 Legend 技能卡选择画面：左上角的「SELECT 獲得」标题（与 ProduceLegendPickFlag 相同的识别）。"""
+        detail = context.run_recognition("ProduceLegendPickFlag", image)
+        return bool(detail and detail.hit)
+
+    @staticmethod
+    def _title(context, image):
+        """顶部详情面板的卡名（NFKC，读不到为 None）。"""
+        detail = context.run_recognition(
+            "ProduceLegendPickTitle", image, pipeline_override={"ProduceLegendPickTitle": {"recognition": "OCR", "roi": LEGEND_TITLE_ROI}}
+        )
+        results = [item for item in (detail.all_results if detail else []) if float(item.score) >= 0.6 and item.text.strip()]
+        text = "".join(item.text for item in sorted(results, key=lambda item: item.box[0]))
+        return unicodedata.normalize("NFKC", text).strip() or None
+
+    @staticmethod
+    def _tap(context, box):
+        x, y, w, h = box
+        context.tasker.controller.post_click(x + w // 2, y + h // 2).wait()
 
 
 @AgentServer.custom_action("ProduceRewardConfirm")

@@ -667,6 +667,148 @@ class RewardChangeTest(unittest.TestCase):
         self.assertEqual(self.decider.requests[0][1], ["reward_1", "reward_2", "reward_3"])
 
 
+LEGEND_NAMES = ("エクセレント♪", "究極スマイル", "最強パフォーマー", "私が最強!", "輝きの到達点")
+
+
+def legend_frame(cards=5, selected=None, enabled=None, gap=None, header=True):
+    """
+    合成的 Legend 技能卡选择画面（按真实画面的布局）：网格中白框的卡，选中项四角的橙色括号，底部「獲得」按钮（可用为亮橙）。
+    左上角像素记下标题是否在（[0, 0]）与选中的第几张（[0, 1]，0 为未选），供替身识别使用。
+    """
+    image = np.full((1280, 720, 3), 90, dtype=np.uint8)
+    for index in range(cards + (gap is not None)):
+        if index == gap:
+            continue
+        x, y = 47 + 160 * (index % 4), 405 + 160 * (index // 4)
+        image[y:y + 145, x:x + 146] = 255
+        image[y + 4:y + 141, x + 4:x + 142] = (140, 60, 180)
+    if selected is not None:
+        x, y = 47 + 160 * (selected % 4), 405 + 160 * (selected // 4)
+        orange = (40, 150, 255)  # BGR
+        corners = ((x - 10, y - 10, 1, 1), (x + 156, y - 10, -1, 1), (x - 10, y + 155, 1, -1), (x + 156, y + 155, -1, -1))
+        for cx, cy, dx, dy in corners:
+            xs = sorted((cx, cx + dx * 36))
+            ys = sorted((cy, cy + dy * 36))
+            image[min(cy, cy + dy * 6):max(cy, cy + dy * 6), xs[0]:xs[1]] = orange
+            image[ys[0]:ys[1], min(cx, cx + dx * 6):max(cx, cx + dx * 6)] = orange
+    enabled = selected is not None if enabled is None else enabled
+    image[1120:1198, 232:488] = (59, 138, 255) if enabled else (77, 113, 186)
+    image[0, 0] = 1 if header else 0
+    image[0, 1] = 0 if selected is None else selected + 1
+    return image
+
+
+class LegendPickLayoutTest(unittest.TestCase):
+    """Legend 技能卡选择画面的定位：网格中从第一格起连续的卡、选中项（四角括号）与「獲得」是否可用。"""
+
+    def test_five_cards_in_two_rows(self):
+        layout = produce_actions.legend_pick_layout(legend_frame())
+        self.assertEqual([c["box"][:2] for c in layout["candidates"]], [[47, 405], [207, 405], [367, 405], [527, 405], [47, 565]])
+        self.assertEqual((layout["selected_index"], layout["take_enabled"]), (None, False))
+
+    def test_the_selected_card_and_the_button(self):
+        for index in range(5):
+            layout = produce_actions.legend_pick_layout(legend_frame(selected=index))
+            self.assertEqual((layout["selected_index"], layout["take_enabled"]), (index, True))
+
+    def test_a_gap_in_the_grid_gives_no_cards(self):
+        self.assertEqual(produce_actions.legend_pick_layout(legend_frame(cards=4, gap=2))["candidates"], [])
+
+    def test_no_cards(self):
+        layout = produce_actions.legend_pick_layout(legend_frame(cards=0))
+        self.assertEqual((layout["candidates"], layout["status"]), ([], "no_cards"))
+
+
+class LegendScreen(FakeController):
+    """点卡则选中该卡，选中后点「獲得」则离开画面；ignore_card_taps 次点卡不生效，leave_after 次点击后画面离开。"""
+
+    def __init__(self, cards=5, ignore_card_taps=0, leave_after=None):
+        super().__init__()
+        self.cards, self.selected, self.left = cards, None, False
+        self.ignore_card_taps, self.leave_after = ignore_card_taps, leave_after
+
+    def post_screencap(self):
+        frame = legend_frame(cards=0, header=False) if self.left else legend_frame(self.cards, self.selected)
+        return SimpleNamespace(wait=lambda: SimpleNamespace(get=lambda: frame))
+
+    def post_click(self, x, y):
+        self.clicks.append((x, y))
+        for index in range(self.cards):
+            gx, gy = 47 + 160 * (index % 4), 405 + 160 * (index // 4)
+            if gx <= x <= gx + 146 and gy <= y <= gy + 145:
+                if self.ignore_card_taps:
+                    self.ignore_card_taps -= 1
+                else:
+                    self.selected = index
+        if 232 <= x <= 488 and 1120 <= y <= 1198 and self.selected is not None:
+            self.left = True
+        if self.leave_after is not None and len(self.clicks) >= self.leave_after:
+            self.left = True
+        return SimpleNamespace(wait=lambda: None)
+
+
+def legend_recognition(name, image, pipeline_override=None):
+    """替身识别：标题看合成画面左上角的标记，卡名按标记的选中项给出。"""
+    if name == "ProduceLegendPickFlag":
+        return SimpleNamespace(hit=bool(image[0, 0, 0]))
+    selected = int(image[0, 1, 0])
+    results = [SimpleNamespace(text=LEGEND_NAMES[selected - 1], score=0.99, box=[190, 108, 200, 34])] if selected else []
+    return SimpleNamespace(hit=bool(results), all_results=results)
+
+
+class LegendPickTest(unittest.TestCase):
+    """Legend 技能卡选择：逐张预览读卡名后作为 reward 请求询问，按答复选中、核对后按「獲得」；没有答复或外部决策未启用时选第一张。"""
+
+    TAKE = (360, 1159)
+
+    def setUp(self):
+        original = produce_actions.ExternalDecider
+        produce_actions.ExternalDecider = SimpleNamespace(load=lambda: self.decider)
+        self.addCleanup(setattr, produce_actions, "ExternalDecider", original)
+        self.action = produce_actions.ProduceLegendPick()
+        self.action.PREVIEW_DELAY = self.action.POLL = 0
+        self.action.SETTLE_TIMEOUT = self.action.LEAVE_TIMEOUT = 0.05
+
+    def run_with(self, answers, screen=None, kinds=("reward",)):
+        self.decider = None if answers is None else ScriptedDecider(answers)
+        if self.decider is not None:
+            self.decider.handles = lambda kind: kind in kinds
+        screen = screen or LegendScreen()
+        context = SimpleNamespace(tasker=SimpleNamespace(controller=screen, stopping=False), run_recognition=legend_recognition)
+        self.assertTrue(self.action.run(context, None))
+        return screen
+
+    def test_the_answer_is_selected_and_taken(self):
+        screen = self.run_with([{"id": "reward_3"}])
+        kind, ids, state = self.decider.requests[0]
+        self.assertEqual((kind, ids), ("reward", [f"reward_{i}" for i in range(1, 6)]))
+        self.assertEqual(state, {"screen": "legend_pick", "names": list(LEGEND_NAMES)})
+        previews = [(120, 477), (280, 477), (440, 477), (600, 477), (120, 637)]
+        self.assertEqual(screen.clicks, previews + [(440, 477), self.TAKE])
+        self.assertTrue(screen.left)
+
+    def test_no_answer_takes_the_first(self):
+        screen = self.run_with([None])
+        self.assertEqual(screen.clicks[-2:], [(120, 477), self.TAKE])
+
+    def test_without_the_decider_the_first_is_taken_without_previews(self):
+        self.assertEqual(self.run_with(None).clicks, [(120, 477), self.TAKE])
+        # 外部决策不处理 reward 时同样
+        self.assertEqual(self.run_with([], kinds=("battle",)).clicks, [(120, 477), self.TAKE])
+
+    def test_a_card_not_selected_is_tapped_again_before_the_button(self):
+        screen = self.run_with(None, LegendScreen(ignore_card_taps=1))
+        self.assertEqual(screen.clicks, [(120, 477), (120, 477), self.TAKE])
+
+    def test_screen_leaving_during_preview_stops_tapping(self):
+        screen = self.run_with([{"id": "reward_3"}], LegendScreen(leave_after=2))
+        self.assertEqual((len(screen.clicks), self.decider.requests), (2, []))
+
+    def test_no_grid_hands_back_without_tapping(self):
+        screen = self.run_with([{"id": "reward_1"}], LegendScreen(cards=0))
+        self.assertEqual((screen.clicks, self.decider.requests), ([], []))
+
+
 class MailboxTest(unittest.TestCase):
     def setUp(self):
         root = ROOT / "debug/research/produce/tests"

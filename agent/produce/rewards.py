@@ -335,6 +335,60 @@ def button_enabled(image, box):
     return band is not None and band.size > 0 and float(np.median(band.max(axis=2))) >= 245
 
 
+# 中间考试后的 Legend 技能卡选择（左上角「SELECT 獲得」，2026-11 的游戏更新后出现）：上方为所选卡的详情面板（未选时为
+# 「選択されていません」），中部为卡牌网格（每行 4 张，相邻两张相距 160），底部为「獲得」按钮（未选卡时发灰不可用）。
+# 网格中的卡有一圈近白的边框，空位是模糊的背景；选中的卡四角有橙色括号（卡外约 12 像素内约 2000 个橙色像素，括号的
+# 边角伸进相邻卡的这一圈约 600 个）。按钮可用时底色为亮橙（最大通道的中位数 255），不可用时约 186。
+LEGEND_GRID = {"x": 47, "y": 405, "w": 146, "h": 145, "pitch": 160, "columns": 4, "rows": 2}
+LEGEND_TITLE_ROI = [185, 100, 430, 50]
+LEGEND_TAKE_BUTTON = [232, 1120, 256, 78]
+LEGEND_SELECTED_PIXELS = 1200
+
+
+def legend_pick_layout(image):
+    """
+    Legend 技能卡选择画面的候选（网格中从第一格起连续有卡的各格，按网格顺序为 reward_1…）、选中项与「獲得」是否可用。
+    第一格起不连续（中间夹着空位）或一张都没有时不给候选。
+    """
+    array = rgb_image(image)
+    if array is None or array.shape != (1280, 720, 3):
+        return {"status": "unsupported_size", "candidates": [], "selected_index": None, "take_enabled": False}
+    grid = LEGEND_GRID
+    boxes, filled = [], []
+    for row in range(grid["rows"]):
+        for column in range(grid["columns"]):
+            x, y, w, h = grid["x"] + column * grid["pitch"], grid["y"] + row * grid["pitch"], grid["w"], grid["h"]
+            white = array.min(axis=2) > 215
+            sides = [
+                white[y + 12:y + h - 12, x:x + 3].any(axis=1).mean(),
+                white[y + 12:y + h - 12, x + w - 3:x + w].any(axis=1).mean(),
+                white[y:y + 3, x + 12:x + w - 12].any(axis=0).mean(),
+                white[y + h - 3:y + h, x + 12:x + w - 12].any(axis=0).mean(),
+            ]
+            filled.append(sum(value >= .8 for value in sides) >= 3)
+            boxes.append([x, y, w, h])
+    count = filled.index(False) if False in filled else len(filled)
+    if not count or any(filled[count:]):
+        return {"status": "no_cards" if not any(filled) else "gap_in_grid", "candidates": [], "selected_index": None, "take_enabled": False}
+    orange = orange_mask(array)
+    scores = []
+    for x, y, w, h in boxes[:count]:
+        ring = orange[y - 12:y + h + 12, x - 12:x + w + 12]
+        scores.append(int(ring.sum() - orange[y:y + h, x:x + w].sum()))
+    best = max(range(count), key=lambda index: scores[index])
+    selected = best if scores[best] >= LEGEND_SELECTED_PIXELS else None
+    bx, by, bw, bh = LEGEND_TAKE_BUTTON
+    take_enabled = float(np.median(array[by:by + bh, bx:bx + bw].max(axis=2))) >= 240
+    return {
+        "status": "ready",
+        "candidates": [
+            {"candidate_id": f"reward_{index + 1}", "box": boxes[index], "highlight_pixels": scores[index]} for index in range(count)
+        ],
+        "selected_index": selected,
+        "take_enabled": take_enabled,
+    }
+
+
 def offer_icons_changed(before, after, boxes):
     """同一组候选位置上图标内部（不含选中括号）变了的位置，阈值同 verify_reward_layout；选中项改变不影响图标内部。"""
     a, b = rgb_image(before), rgb_image(after)

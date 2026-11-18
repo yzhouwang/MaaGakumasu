@@ -869,6 +869,7 @@
             "[JumpBack]ProduceCardsFlag",
             "[JumpBack]ProduceChooseGetFlag",
             "[JumpBack]ProduceChooseRewardExternal",
+            "[JumpBack]ProduceLegendPickFlag",
             "[JumpBack]ProduceDeckEditExternal",
             "[JumpBack]ProduceChooseStrengthenFlag",
             "[JumpBack]ProduceChooseDeleteFlag",
@@ -1014,6 +1015,32 @@
             "param": {
                 "custom_action": "ProduceChooseRewardExternal"
             }
+        }
+    },
+    "ProduceLegendPickFlag": {
+        "recognition": {
+            "type": "TemplateMatch",
+            "param": {
+                "roi": [
+                    0,
+                    20,
+                    300,
+                    80
+                ],
+                "template": [
+                    "produce/legend_select_header.png"
+                ],
+                "threshold": 0.8
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "ProduceLegendPick"
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "[color:LimeGreen]事件: 选择 Legend 技能卡[/color]"
         }
     },
     "ProduceConsultExternal": {
