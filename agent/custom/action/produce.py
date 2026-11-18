@@ -706,7 +706,8 @@ class ProduceLegendPick(CustomAction):
     TAKE_TRIES = 3
 
     def run(self, context, argv):
-        controller = context.tasker.controller
+        # 控制器每次现取（context.tasker.controller），不存进变量：AgentServer 里再次取控制器后，先前取到的句柄失效，
+        # 用它截图会在 MaaControllerPostScreencap 里段错误（2026-11-18 第十五次实况，agent 进程崩溃，培育停住）。
         image, layout = self._settled_layout(context)
         if image is None:
             return False
@@ -725,7 +726,7 @@ class ProduceLegendPick(CustomAction):
                 time.sleep(self.PREVIEW_DELAY)
                 if context.tasker.stopping:
                     return False
-                preview = controller.post_screencap().wait().get().copy()
+                preview = context.tasker.controller.post_screencap().wait().get().copy()
                 if not self._on_screen(context, preview):
                     logger.warning("Legend 技能卡选择画面在预览时离开，不再点击")
                     return True
@@ -756,13 +757,12 @@ class ProduceLegendPick(CustomAction):
 
     def _take(self, context, box, index):
         """选中第 index 张，核对选中括号与「獲得」可用后按下，等画面离开；未离开时重试。"""
-        controller = context.tasker.controller
         for _ in range(self.TAKE_TRIES):
             if context.tasker.stopping:
                 return False
             self._tap(context, box)
             time.sleep(self.PREVIEW_DELAY)
-            image = controller.post_screencap().wait().get()
+            image = context.tasker.controller.post_screencap().wait().get()
             if not self._on_screen(context, image):
                 return True
             layout = legend_pick_layout(image)
@@ -775,7 +775,7 @@ class ProduceLegendPick(CustomAction):
             deadline = time.time() + self.LEAVE_TIMEOUT
             while time.time() < deadline and not context.tasker.stopping:
                 time.sleep(self.POLL)
-                if not self._on_screen(context, controller.post_screencap().wait().get()):
+                if not self._on_screen(context, context.tasker.controller.post_screencap().wait().get()):
                     logger.info("已获得 Legend 技能卡")
                     return True
             logger.warning("Legend 技能卡选择：按「獲得」后画面未离开，重试")
