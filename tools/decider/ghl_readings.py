@@ -6,7 +6,8 @@ GHL（gakumas-headless-lab）按这些读数组装实况回放输入 LiveRun（s
 每条决策一行 JSON：
 - battle：GHL 实况帧（ghl_frame.read_battle_request），战斗编号取请求的 context.battle_id；
 - reward：奖励种类（技能卡 card、P 饮料 drink、P 道具 item；开局奖励的画面与饮料奖励相同，由 GHL 按位置区分）、
-  各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；
+  各候选的名称（候选详情截图的标题查库，与候选顺序一致，未识别为 null）、剩余的重抽与卡牌移除次数；中间考试后的
+  Legend 技能卡选择（「SELECT 獲得」）记为技能卡奖励，另记 screen: legend_pick；
 - week：周数（「中間まで N週」「最終試験まで N週」）、三维成长加成，以及请求中已读取的体力、P 点数与三维；
 - customize（特别指导）：顶部的 P 点数；改造预览画面另读卡牌名、菜单各选项的名称、价格与改造上限（还可改造的次数或「カスタマイズ上限」）、
   选中的选项与其价格，以及这张卡还可改造的总次数（「合計あと N回」）与本次特别指导还可改造的卡牌数（「あと N枚」）；
@@ -37,6 +38,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / "agent"), str(Path(__file__).resolve().par
 REWARD_PROMPT_ROI = [40, 590, 640, 60]
 REWARD_COUNTER_ROI = [20, 1030, 680, 90]
 OFFER_TITLE_ROI = [120, 485, 480, 55]
+# 中间考试后的 Legend 技能卡选择（请求的 state.screen 为 legend_pick，agent/custom/action/produce.py 的 ProduceLegendPick）：
+# 没有提示语与剩余次数，卡名在顶部详情面板（同 agent/produce/rewards.py 的 LEGEND_TITLE_ROI）。
+LEGEND_TITLE_ROI = [185, 100, 430, 50]
 # 行动选择画面：左上角距考试的周数，三维下方的成长加成。
 WEEK_COUNTER_ROI = [30, 25, 175, 115]
 WEEK_BONUS_ROI = [150, 740, 420, 40]
@@ -111,24 +115,35 @@ def offer_name(identity):
 
 
 def reward_reading(vision, rewards, mailbox, request):
-    """奖励：种类、候选名称（与候选顺序一致，读不到为 None）与剩余次数。"""
+    """
+    奖励：种类、候选名称（与候选顺序一致，读不到为 None）与剩余次数。中间考试后的 Legend 技能卡选择（state.screen 为
+    legend_pick）记为技能卡奖励（screen 为 legend_pick），提示语记为「SELECT 獲得」，没有剩余次数，卡名读顶部详情面板。
+    """
     from utils.image_io import read_image
     from produce.analysis import normalized_image
 
-    array = normalized_image(read_image(mailbox / request["frame"]))
-    prompt, kind, counters = reward_fields(texts(vision, array, REWARD_PROMPT_ROI), texts(vision, array, REWARD_COUNTER_ROI))
+    legend = (request.get("state") or {}).get("screen") == "legend_pick"
+    if legend:
+        prompt, kind, counters = "SELECT 獲得", "card", {}
+    else:
+        array = normalized_image(read_image(mailbox / request["frame"]))
+        prompt, kind, counters = reward_fields(texts(vision, array, REWARD_PROMPT_ROI), texts(vision, array, REWARD_COUNTER_ROI))
+    title_roi = LEGEND_TITLE_ROI if legend else OFFER_TITLE_ROI
     candidates = [candidate["id"] for candidate in request["candidates"] if candidate["id"].startswith("reward_")]
     names, kinds = [], []
     for candidate in candidates:
         frame = (request.get("extra_frames") or {}).get("offer" + candidate.removeprefix("reward_"))
-        title = [item for item in texts(vision, normalized_image(read_image(mailbox / frame)), OFFER_TITLE_ROI) if item["confidence"] >= 0.6] if frame else []
+        title = []
+        if frame:
+            title = [item for item in texts(vision, normalized_image(read_image(mailbox / frame)), title_roi) if item["confidence"] >= 0.6]
         name, item_kind = offer_name(rewards.match_tokens(title) if title else {})
         names.append(name)
         kinds.append(item_kind)
     # 提示语读不到（画面过渡）而候选同属一种时，按名称所属种类补全。
     if kind is None and names and all(kinds) and len(set(kinds)) == 1:
         kind = kinds[0]
-    return {"kind": kind, "prompt": prompt, "names": names, "candidates": candidates, "counters": counters}
+    reading = {"kind": kind, "prompt": prompt, "names": names, "candidates": candidates, "counters": counters}
+    return dict(reading, screen="legend_pick") if legend else reading
 
 
 def exchange_fields(dialog_items, p_items):

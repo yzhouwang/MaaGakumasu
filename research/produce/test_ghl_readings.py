@@ -1,5 +1,6 @@
 """牌组账本读数回归：行动选择画面的周数与成长加成、奖励画面的种类与剩余次数、候选名称、课程属性图标、特别指导的改造预览（含改造上限）、
-相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除）与主画面的服务按钮、「リフレッシュ」次数和扣款气泡，以及实况读取的断行恢复与失败重试。
+相谈的确认对话框（交換確認、スキルカード強化、スキルカード削除）与主画面的服务按钮、「リフレッシュ」次数和扣款气泡，中间考试后的 Legend 技能卡选择，
+以及实况读取的断行恢复与失败重试。
 
 使用替身 OCR 文字，不读取真实截图；需要安装 maafw（读取器模块的导入链）。临时文件写入 debug/research/produce/tests/。
 """
@@ -31,6 +32,7 @@ from ghl_readings import (
     CUSTOMIZE_TITLE_ROI,
     EXCHANGE_DIALOG_ROI,
     CUSTOMIZE_FOOTER_ROI,
+    LEGEND_TITLE_ROI,
     limit_rois,
     offer_name,
     option_rois,
@@ -45,6 +47,7 @@ from ghl_readings import (
     selected_option,
     customize_fields,
     customize_reading,
+    reward_reading,
 )
 
 
@@ -449,6 +452,60 @@ class FakeRewards:
         if kind is None:
             return {"status": "unknown"}
         return {"status": "matched", "item_kind": kind, "database_name": text.rstrip("+"), "observed_plus_count": text.count("+")}
+
+
+class LegendPickReadingTest(unittest.TestCase):
+    """中间考试后的 Legend 技能卡选择：记为技能卡奖励，卡名读各详情截图顶部的面板，不读提示语与剩余次数。"""
+
+    NAMES = ("エクセレント♪", "究極スマイル", "最強パフォーマー", "私が最強！", "輝きの到達点")
+
+    class Vision:
+        """按截图左上角的标记给出该详情截图顶部面板的卡名；其它区域都读不到。"""
+
+        def __init__(self, names):
+            self.names, self.rois = names, []
+
+        def _read_title(self, array, roi):
+            self.rois.append(tuple(roi))
+            index = int(array[0, 0, 0])
+            return [token(self.names[index - 1], [190, 108, 200, 34])] if tuple(roi) == tuple(LEGEND_TITLE_ROI) and index else []
+
+    class Rewards:
+        """查库：读到的文字已经 NFKC（「！」读成「!」），给出库中的名称。"""
+
+        def match_tokens(self, tokens):
+            import unicodedata
+
+            name = next(n for n in LegendPickReadingTest.NAMES if unicodedata.normalize("NFKC", n) == tokens[0]["text"])
+            return {"status": "matched", "item_kind": "skill_card", "database_name": name, "observed_plus_count": 0}
+
+    def test_names_from_the_top_panel(self):
+        from utils.image_io import encode_png
+
+        root = ROOT / "debug/research/produce/tests"
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="legend_", dir=root)
+        self.addCleanup(temporary.cleanup)
+        mailbox = Path(temporary.name)
+        extra = {}
+        for index in range(len(self.NAMES) + 1):
+            image = np.zeros((1280, 720, 3), dtype=np.uint8)
+            image[0, 0, 0] = index
+            (mailbox / f"{index}.png").write_bytes(encode_png(image))
+            if index:
+                extra[f"offer{index}"] = f"{index}.png"
+        candidates = [{"id": f"reward_{index}"} for index in range(1, len(self.NAMES) + 1)]
+        request = {"frame": "0.png", "extra_frames": extra, "candidates": candidates, "state": {"screen": "legend_pick"}}
+        vision = self.Vision(self.NAMES)
+        reading = reward_reading(vision, self.Rewards(), mailbox, request)
+        self.assertEqual(
+            reading,
+            {
+                "kind": "card", "prompt": "SELECT 獲得", "names": list(self.NAMES), "candidates": [c["id"] for c in candidates],
+                "counters": {}, "screen": "legend_pick",
+            },
+        )
+        self.assertEqual(set(vision.rois), {tuple(LEGEND_TITLE_ROI)})
 
 
 class ConsultReadingTest(unittest.TestCase):
