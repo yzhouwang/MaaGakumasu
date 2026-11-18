@@ -13,6 +13,7 @@ __all__ = [
     "ProduceChooseNIAEventAuto",
     "ProduceCardsAuto",
     "ProduceRewardConfirm",
+    "ProduceSkipShowAuto",
     "SupportCardsAuto",
     "ProduceChooseWorkAuto",
     "ProduceChooseOptionsAuto",

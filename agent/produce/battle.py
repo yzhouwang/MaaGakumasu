@@ -156,6 +156,11 @@ class ProduceCardsAuto(CustomAction):
 
             # 通过检测体力槽判断是否处于出牌场景
             if not self._is_playing_card(context, image):
+                # 动画可能暂时遮住体力标志，复用等待逻辑复核，恢复后重新截图（v1.5.3）。
+                if self._wait_until_playable(context):
+                    continue
+                if context.tasker.stopping:
+                    return True
                 self._record("battle_exit_observation", image, reason="health_flag_not_detected")
                 self._log_battle_exit(context)
                 break
@@ -366,7 +371,8 @@ class ProduceCardsAuto(CustomAction):
             image = context.tasker.controller.post_screencap().wait().get()
 
         reco_detail = context.run_recognition("ProduceRecognitionChooseMoveCards", image)
-        if reco_detail.hit:
+        if reco_detail and reco_detail.hit:
+            logger.info("战斗 - 移动／复制选牌")
             self._record("move_cards_screen", image, decision_id=self._active_decision)
             y = 450
             while y < 1100:
@@ -380,9 +386,13 @@ class ProduceCardsAuto(CustomAction):
                     time.sleep(0.2)
                 image = context.tasker.controller.post_screencap().wait().get()
                 reco_detail = context.run_recognition("ProduceRecognitionChooseMoveCards", image)
-                if not reco_detail.hit:
+                if reco_detail and not reco_detail.hit:
                     self._record("move_cards_selection_observation", image, decision_id=self._active_decision)
-                    context.run_task("ProduceMoveCards")
+                    result = context.run_task("ProduceMoveCards")
+                    if result and result.status.succeeded:
+                        logger.info("战斗 - 已点击移动／复制确认")
+                    else:
+                        logger.warning("战斗 - 移动／复制确认未完成")
                     return True
                 else:
                     y = y + 100
@@ -447,6 +457,8 @@ class ProduceCardsAuto(CustomAction):
                 count_exit += 1
                 if count_exit >= 2:
                     return False
+            else:
+                count_exit = 0
 
             # 解决莫名其妙的误触问题
             reco_detail = context.run_recognition("ProduceButton", image)

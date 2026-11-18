@@ -411,7 +411,7 @@
     },
     "启用关注租借": {
       "type": "switch",
-      "default_case": "Yes",
+      "default_case": "No",
       "cases": [
         {
           "name": "Yes",
@@ -453,7 +453,7 @@
     },
     "卡片选择优先级": {
       "type": "select",
-      "default_case": "建议卡>活动卡",
+      "default_case": "活动卡>建议卡",
       "description": "$卡片选择优先级说明",
       "cases": [
         {
@@ -533,7 +533,7 @@
     },
     "跟随老师的建议": {
       "type": "switch",
-      "default_case": "Yes",
+      "default_case": "No",
       "cases": [
         {
           "name": "Yes",
@@ -779,8 +779,26 @@
     },
     "雨夜燕卡片": {
       "type": "select",
-      "default_case": "雨夜燕(クライアイ)",
+      "default_case": "雨夜燕(ガラクタロード)",
       "cases": [
+        {
+          "name": "雨夜燕(ガラクタロード)",
+          "pipeline_override": {
+            "ProduceChooseIdol": {
+              "custom_recognition_param": {
+                "idol_name": "雨夜燕",
+                "song_name": "ガラクタロード"
+              }
+            },
+            "ProduceChooseNIAEventFlag": {
+              "custom_action_param": {
+                "effect": "非凡·强气",
+                "first": "Da",
+                "second": "Vo"
+              }
+            }
+          }
+        },
         {
           "name": "雨夜燕(クライアイ)",
           "pipeline_override": {
@@ -2378,8 +2396,26 @@
     },
     "秦谷美鈴卡片": {
       "type": "select",
-      "default_case": "秦谷美鈴(「ねえ、言っちゃうよ。」)",
+      "default_case": "秦谷美鈴(ガラクタロード)",
       "cases": [
+        {
+          "name": "秦谷美鈴(ガラクタロード)",
+          "pipeline_override": {
+            "ProduceChooseIdol": {
+              "custom_recognition_param": {
+                "idol_name": "秦谷美鈴",
+                "song_name": "ガラクタロード"
+              }
+            },
+            "ProduceChooseNIAEventFlag": {
+              "custom_action_param": {
+                "effect": "理性·好印象",
+                "first": "Vo",
+                "second": "Vi"
+              }
+            }
+          }
+        },
         {
           "name": "秦谷美鈴(「ねえ、言っちゃうよ。」)",
           "pipeline_override": {
@@ -3302,8 +3338,26 @@
     },
     "十王星南卡片": {
       "type": "select",
-      "default_case": "十王星南(ガラクタロード)",
+      "default_case": "十王星南(Roar)",
       "cases": [
+        {
+          "name": "十王星南(Roar)",
+          "pipeline_override": {
+            "ProduceChooseIdol": {
+              "custom_recognition_param": {
+                "idol_name": "十王星南",
+                "song_name": "Roar"
+              }
+            },
+            "ProduceChooseNIAEventFlag": {
+              "custom_action_param": {
+                "effect": "感性·集中",
+                "first": "Vi",
+                "second": "Vo"
+              }
+            }
+          }
+        },
         {
           "name": "十王星南(ガラクタロード)",
           "pipeline_override": {
@@ -3533,8 +3587,26 @@
     },
     "倉本千奈卡片": {
       "type": "select",
-      "default_case": "倉本千奈(標)",
+      "default_case": "倉本千奈(ガラクタロード)",
       "cases": [
+        {
+          "name": "倉本千奈(ガラクタロード)",
+          "pipeline_override": {
+            "ProduceChooseIdol": {
+              "custom_recognition_param": {
+                "idol_name": "倉本千奈",
+                "song_name": "ガラクタロード"
+              }
+            },
+            "ProduceChooseNIAEventFlag": {
+              "custom_action_param": {
+                "effect": "非凡·全力",
+                "first": "Da",
+                "second": "Vi"
+              }
+            }
+          }
+        },
         {
           "name": "倉本千奈(標)",
           "pipeline_override": {
