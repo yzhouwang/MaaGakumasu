@@ -1285,6 +1285,87 @@
 				"radius": 33
 			},
 			"template_sha256": "e7aed97065be1aaf739f9661e65cfc944507628e0974cd0329285d70b13adcdc"
+		},
+		{
+			"id": "drink_0021",
+			"drink_id": 21,
+			"name": "初星ブーストエナジー",
+			"template": "produce/drinks/drink_0021.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-1247-ghl",
+				"frame_sha256": "23da6e08f65f041ddea32e3b0e2ace1b6b57e24810f9967f9d1e7d5574f36b2a",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-19",
+				"verification": {
+					"method": "drink_keep_dialog_effect_cross_check",
+					"evidence": "Drink slot 0 of the final's first frame (request 20261119-124754-00191, 篠澤広【コントラスト】). The drink-keep dialog of the same run (request 00122) lists this icon with 絶好調2ターン and 手札をすべてレッスン中強化, the master data's 初星ブーストエナジー (perfectConditionTurns+=2; upgradeHand), and the bridge offered 初星ブーストエナジー on this icon's slot at 00011, where it was the only drink besides a read 初星ホエイプロテイン.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "c6064490a81d35a77983ffaee3fcc0cdca3c16a8f6915ef54cd4fe80eb5a2b52"
+		},
+		{
+			"id": "drink_0004",
+			"drink_id": 4,
+			"name": "アイスコーヒー",
+			"template": "produce/drinks/drink_0004.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-1247-ghl",
+				"frame_sha256": "23da6e08f65f041ddea32e3b0e2ace1b6b57e24810f9967f9d1e7d5574f36b2a",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-19",
+				"verification": {
+					"method": "drink_keep_dialog_effect_cross_check",
+					"evidence": "Drink slot 1 of the final's first frame (request 20261119-124754-00191). The drink-keep dialog of the same run (request 00122) lists this icon twice with 集中+3, the master data's アイスコーヒー (concentration+=3); no other drink gives 集中+3.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "ddb5e346480d2b3394a449346cba4c0c2233d1521c8c149aed8907a6a5932eaf"
+		},
+		{
+			"id": "drink_0020",
+			"drink_id": 20,
+			"name": "厳選初星マキアート",
+			"template": "produce/drinks/drink_0020.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-1247-ghl",
+				"frame_sha256": "23da6e08f65f041ddea32e3b0e2ace1b6b57e24810f9967f9d1e7d5574f36b2a",
+				"box": [197, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-19",
+				"verification": {
+					"method": "drink_keep_dialog_effect_cross_check",
+					"evidence": "Drink slot 2 of the final's first frame (request 20261119-124754-00191). The drink-keep dialog of the same run (request 00122) lists this icon as the received drink with 以降、ターン終了時、集中+1, the master data's 厳選初星マキアート (at:endOfTurn { concentration+=1 }); no other drink has that effect.",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "8a598c63c240dd10ae111cd87a764b950fd65147abfbe27f106a062f82f59636"
 		}
 	],
 	"items": [
