@@ -1366,6 +1366,33 @@
 				"radius": 33
 			},
 			"template_sha256": "8a598c63c240dd10ae111cd87a764b950fd65147abfbe27f106a062f82f59636"
+		},
+		{
+			"id": "drink_0003",
+			"drink_id": 3,
+			"name": "ビタミンドリンク",
+			"template": "produce/drinks/drink_0003.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-1635-ghl",
+				"frame_sha256": "2087b37cc58770120949b2f20b99f91896a40ebdb139cc6176753612acb68971",
+				"box": [26, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-19",
+				"verification": {
+					"method": "drink_keep_dialog_effect_cross_check",
+					"evidence": "Drink slot 0 of request 20261119-163614-00135 (有村麻央【Fluorite】), whose slots 0 and 1 show the same pink bottle and slot 2 reads アイスコーヒー by its template. The drink-keep dialog right after it (request 00136) lists the drinks held: this icon twice with 好調3ターン, the master data's ビタミンドリンク (goodConditionTurns+=3), and アイスコーヒー (集中+3); no other drink has that effect. The same bottle is the first Sense run's unread R drink (11-18).",
+					"popup_name_confirmed": false
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "8128902793f57dbac8f194cbe4923977048008d0ccfe97ab7853b16dda790e05"
 		}
 	],
 	"items": [
