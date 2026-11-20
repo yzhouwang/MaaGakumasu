@@ -1393,6 +1393,33 @@
 				"radius": 33
 			},
 			"template_sha256": "8128902793f57dbac8f194cbe4923977048008d0ccfe97ab7853b16dda790e05"
+		},
+		{
+			"id": "drink_0015",
+			"drink_id": 15,
+			"name": "スタミナ爆発ドリンク",
+			"template": "produce/drinks/drink_0015.png",
+			"threshold": 0.97,
+			"method": 10001,
+			"roi": [10, 1150, 280, 100],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-1903-ghl",
+				"frame_sha256": "b9e92293956d2392792216572ad48748aeaf3fbcd9463d2c796874d2337d0f0a",
+				"box": [112, 1165, 70, 70],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-19",
+				"verification": {
+					"method": "reward_offer_name_cross_check",
+					"evidence": "Drink slot 1 of request 20261119-190341-00062 (花海咲季【Fighting My Way】, the midterm's first turn); slot 0 reads ブーストエキス by its template. The same dark can with an orange burst is the second of the three drinks offered at request 00028 (活動支給), whose detail screen (00028-offer2) names it スタミナ爆発ドリンク with 絶好調1ターン and 元気+9, the master data's effects for drink 15; the can was granted by the week-7 SP lesson's CLEAR reward (recording 2026-11-19 19-03-27.mov, about 9:09) and held unread through the midterm.",
+					"popup_name_confirmed": true
+				}
+			},
+			"mask": {
+				"shape": "circle",
+				"center": [35, 35],
+				"radius": 33
+			},
+			"template_sha256": "d912a3975e395992b1b87ca1ba418da6b613a07f67bf9dfc78c6336a7df95bed"
 		}
 	],
 	"items": [
