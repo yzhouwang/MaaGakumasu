@@ -1472,6 +1472,81 @@
 				"tolerance": 12
 			},
 			"template_sha256": "2c5b2b9b48007674673d6055baa4b664697c5ed07d56b65f145c93cc9f6165e6"
+		},
+		{
+			"id": "item_0079",
+			"item_id": 79,
+			"name": "夢にあふれた大荷物",
+			"template": "produce/items/item_0079.png",
+			"threshold": 0.95,
+			"method": 10001,
+			"roi": [600, 296, 120, 210],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-20-0438-ghl",
+				"frames": ["c204a2ca0e7035c04128a567f2ac127368554c36a702ee7935546b9f78bbf7b2", "291d0941bfa09b5bf0229aa154a3ae5f02633d9c7829c839e5e8f54c03bb8e24", "3f7be18c059236a959bae18f982ac77880e5b3b76872211fb84f9b9980eb71da", "9931d173cbba1bded2ef3880a6cfaeb55bccb2f8fd20b385b94aa578d068c814", "5468291f315dfd6e98cc16a9af5432fb2000afa16252c2bca3a9ac80fe0c3791", "bcd23134797695d3e1ebb1c1bbe0c3a99befcb4a79947823f0b098f76755ce76", "f25ee7a9058b8b54f2d1332d60e3f7ded10e67c13ca448cd99edca5209a1a23e", "b825dbfea90a71f97f24d8d7fcc5cc3121d5973e91fe70e1820b8f17f672c05d", "1f2a8e65299004f5ac61bc373a89c02b911cf8547e38f23d385ca04a6b3e3b72", "49d5e3d956f2a0ea7e652b775d41c883d4bd008bd506c584049253fd0a225ee4"],
+				"box": [628, 314, 62, 58],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-20",
+				"verification": {
+					"method": "support_selection_screen_and_master_data",
+					"evidence": "The box of goods in slot 2 of the P-item column on the week screens of the 2026-11-20 04:38 run (requests 00008 to 00148). Its name: the 獲得 item of ほら、一緒に持と♪ (s_card-3-0017) on the support selection screen. Master data: pitem_00-3-027-0, the first event of s_card-3-0017."
+				}
+			},
+			"mask": {
+				"shape": "agreement",
+				"tolerance": 12
+			},
+			"template_sha256": "b57e78a7958958ea3cec60183c5e2aff103fcad4f3ec09a49f0d6b125018303f"
+		},
+		{
+			"id": "item_0321",
+			"item_id": 321,
+			"name": "ピークタイムフラッグ",
+			"template": "produce/items/item_0321.png",
+			"threshold": 0.95,
+			"method": 10001,
+			"roi": [600, 296, 120, 210],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-19-2215-ghl",
+				"frames": ["b8e33053146e4f48a8f9abc2447b1b3716c1e3c911f5040e4cd402468b368665", "d938d2d83cabf9391a8b406505ee39d305b2900e21be1d748b973fa6328344f2", "9565c55f42a8e6c4b0caf3f2c2333b5a2bfd836c12baa25365b47e850673db50", "e2ebb49a636e3496452151514c9698b340144ba7eda5059c829f5dff05000997", "7138746df3e75ac922be67d3d1524c666d69fc76046362c601c467baf1732e62", "6f4bde7fe7a6435433c298e401be636aba4ebe1dd16506edc121d173b7269f18", "9b34e88157579c2fc27dc5135220193763cd830fb6b0db4e50d5ad3e55072299", "8640477a348a1e5f6aaa89cb89fb6a21b371a27b2c9393c1e8dbc4828eb52281", "ac4b556c12c263f64bb9de7d3f60e447bd74b212a8d8326373487f0e840008a5", "2605004a88b382c5d4a0e4d1007d81f6520de433b1aa7ef97ebcd338fb1dfaa3"],
+				"box": [628, 306, 66, 68],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-20",
+				"verification": {
+					"method": "support_selection_screen_and_master_data",
+					"evidence": "The plate with flags in slot 2 on the week screens of the 2026-11-19 22:15 run (requests 00008 to 00135), its use counter (3, 2, 1) masked. Its name: the 獲得 item of おい、来てやったぞ！ (s_card-3-0070) on the support selection screen. Master data: pitem_01-3-140-0, the first event of s_card-3-0070. Spent (its three uses), the icon turns grey and no longer matches."
+				}
+			},
+			"mask": {
+				"shape": "agreement",
+				"tolerance": 12
+			},
+			"template_sha256": "2abc3740044813c4700eb767e135b7029f385fc4946d09745748e5ee00fd9785"
+		},
+		{
+			"id": "item_0071",
+			"item_id": 71,
+			"name": "得体のしれないモノ",
+			"template": "produce/items/item_0071.png",
+			"threshold": 0.95,
+			"method": 10001,
+			"roi": [600, 296, 120, 210],
+			"green_mask": true,
+			"source": {
+				"run_id": "decider-mailbox-2026-11-20-0438-ghl",
+				"frames": ["9931d173cbba1bded2ef3880a6cfaeb55bccb2f8fd20b385b94aa578d068c814", "5468291f315dfd6e98cc16a9af5432fb2000afa16252c2bca3a9ac80fe0c3791", "bcd23134797695d3e1ebb1c1bbe0c3a99befcb4a79947823f0b098f76755ce76", "f25ee7a9058b8b54f2d1332d60e3f7ded10e67c13ca448cd99edca5209a1a23e", "b825dbfea90a71f97f24d8d7fcc5cc3121d5973e91fe70e1820b8f17f672c05d", "1f2a8e65299004f5ac61bc373a89c02b911cf8547e38f23d385ca04a6b3e3b72", "49d5e3d956f2a0ea7e652b775d41c883d4bd008bd506c584049253fd0a225ee4"],
+				"box": [630, 440, 56, 56],
+				"environment": "MuMu 12 (macOS) / Japanese 初 LEGEND / 720x1280 / 2026-11-20",
+				"verification": {
+					"method": "support_selection_screen_and_master_data",
+					"evidence": "The magazine (SP特) in slot 4 on the week screens of the 2026-11-20 04:38 run (requests 00033 to 00148). Its name: the 獲得 item of あなたにも作ってあげる！ (s_card-3-0000) on the support selection screen. Master data: pitem_00-3-009-0, the first event of s_card-3-0000."
+				}
+			},
+			"mask": {
+				"shape": "agreement",
+				"tolerance": 12
+			},
+			"template_sha256": "4fd2af71e24b1a24c203902448ef3758fc9baaafd8aacc2b54160ee95c658a76"
 		}
 	]
 }
