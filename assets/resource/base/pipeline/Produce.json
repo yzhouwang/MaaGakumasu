@@ -1811,8 +1811,10 @@
                 ]
             }
         },
+        "post_delay": 1000,
         "next": [
-            "ProduceFailedRetry"
+            "ProduceFailedRetryFree",
+            "ProduceFailedStop"
         ]
     },
     "ProduceFailedStop": {
@@ -1862,6 +1864,39 @@
         "action": {
             "type": "Click",
             "param": {}
+        },
+        "next": [
+            "ProduceFailedRetryConfirm"
+        ]
+    },
+    "ProduceFailedRetryFree": {
+        "recognition": "And",
+        "all_of": [
+            {
+                "recognition": "OCR",
+                "roi": [
+                    300,
+                    1030,
+                    420,
+                    100
+                ],
+                "expected": "あと\\s*[1-9]\\s*回\\s*無料"
+            },
+            {
+                "recognition": "TemplateMatch",
+                "roi": [
+                    16,
+                    1040,
+                    688,
+                    220
+                ],
+                "template": "produce/challenge.png"
+            }
+        ],
+        "box_index": 1,
+        "action": "Click",
+        "focus": {
+            "Node.Recognition.Succeeded": "[color:DeepSkyBlue]今日仍有免费再挑战次数，开始再挑战[/color]"
         },
         "next": [
             "ProduceFailedRetryConfirm"

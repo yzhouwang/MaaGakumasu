@@ -562,8 +562,10 @@
           "name": "Yes",
           "pipeline_override": {
             "ProduceFailedFlag": {
+              "post_delay": 1000,
               "next": [
-                "ProduceFailedRetry"
+                "ProduceFailedRetryFree",
+                "ProduceFailedStop"
               ]
             },
             "ProduceNIAFailedFlag": {
